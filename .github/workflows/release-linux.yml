@@ -1,4 +1,7 @@
-name: Windows Release
+name: Linux Release
+
+# 只出 x86_64。Linux 包没有等同 Apple 公证的系统签名环节，产物上唯一的签名是更新包签名，
+# 它由 release-prepare 强制要求，缺了不出包。
 
 on:
   workflow_dispatch:
@@ -7,13 +10,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-release
+  group: linux-release
   cancel-in-progress: false
 
 jobs:
   release:
-    name: Build Windows installer
-    runs-on: windows-latest
+    name: Build Linux x86_64 packages
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       CI: true
@@ -34,12 +37,12 @@ jobs:
       - name: Set up build
         uses: ./.github/actions/setup-build
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: x86_64-unknown-linux-gnu
 
       - name: Run release gate
         run: bun run gate
 
-      - name: Build installer and create draft release
+      - name: Build packages and create draft release
         id: tauri
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
@@ -49,7 +52,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: bun run tauri
-          args: --target x86_64-pc-windows-msvc --bundles nsis --config ../../.tmp/updater-config.json
+          args: --target x86_64-unknown-linux-gnu --bundles deb,appimage --config ../../.tmp/updater-config.json
           tagName: v__VERSION__
           releaseName: qywork v__VERSION__
           releaseCommitish: ${{ github.sha }}
@@ -62,15 +65,21 @@ jobs:
       - name: Create checksum
         shell: bash
         run: |
-          bundle=".tmp/cargo-target/x86_64-pc-windows-msvc/release/bundle/nsis"
-          installers=("$bundle"/*.exe)
-          # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
-          [ -f "${installers[0]}" ] || installers=()
-          if [ "${#installers[@]}" -ne 1 ]; then
-            echo "Expected one NSIS installer in $bundle, found ${#installers[@]}." >&2
-            exit 1
-          fi
-          ( cd "$bundle" && sha256sum "$(basename "${installers[0]}")" ) > SHA256SUMS-windows-x86_64.txt
+          bundle=".tmp/cargo-target/x86_64-unknown-linux-gnu/release/bundle"
+          : > SHA256SUMS-linux-x86_64.txt
+          sum_one() {
+            local dir="$1" pattern="$2"
+            local packages=("$dir"/$pattern)
+            # 没命中时 glob 原样留在数组里，先按文件存在与否清掉，报出来的个数才是真的。
+            [ -f "${packages[0]}" ] || packages=()
+            if [ "${#packages[@]}" -ne 1 ]; then
+              echo "Expected one $pattern in $dir, found ${#packages[@]}." >&2
+              exit 1
+            fi
+            ( cd "$dir" && sha256sum "$(basename "${packages[0]}")" ) >> SHA256SUMS-linux-x86_64.txt
+          }
+          sum_one "$bundle/deb" "*.deb"
+          sum_one "$bundle/appimage" "*.AppImage"
 
       - name: Upload checksum to draft release
         shell: bash
@@ -78,4 +87,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
-          gh release upload "v$version" SHA256SUMS-windows-x86_64.txt --clobber
+          gh release upload "v$version" SHA256SUMS-linux-x86_64.txt --clobber
