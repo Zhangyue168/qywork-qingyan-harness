@@ -9,6 +9,7 @@ import { buildTailNotes } from './prompt.ts'
 
 const MODEL = '满血sd2.5(30-10-10原生过人脸/720P)'
 const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
+const FULL_PARAMS = '高质量sd2.5(满血全参/720P/按次)'
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
@@ -28,6 +29,7 @@ let server: ReturnType<typeof Bun.serve>
 let seen: Seen[]
 let status: 'completed' | 'failed'
 let contentStatus: number
+let taskStatuses: string[]
 
 beforeAll(() => {
   server = Bun.serve({
@@ -66,7 +68,7 @@ beforeAll(() => {
           message: '',
           data: {
             task_id: TASK,
-            status: status === 'completed' ? 'SUCCESS' : 'FAILURE',
+            status: taskStatuses.shift() ?? (status === 'completed' ? 'SUCCESS' : 'FAILURE'),
             fail_reason: status === 'failed' ? REJECTED : '',
             progress: '100%',
           },
@@ -85,6 +87,7 @@ beforeEach(() => {
   seen = []
   status = 'completed'
   contentStatus = 200
+  taskStatuses = []
 })
 
 const config = (model = MODEL): QyConfig => ({
@@ -430,4 +433,172 @@ test.each(['audio/wav', 'audio/mp4', 'audio/mpeg'])(
     expect(result.message).toContain('未提交生成')
     expect(seen).toEqual([])
   },
+)
+
+test('满血全参版独立开放图、视频、音频，Agent 可见上限，原有型号能力不变', () => {
+  const spec = findMediaModel(FULL_PARAMS)!
+  expect(spec).toMatchObject({
+    vendor: 'Mumugofe',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10 },
+  })
+  expect(spec.price).toBeUndefined()
+  expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
+  const text = buildTailNotes({
+    workspaceRoot: '/w',
+    platform: 'win32',
+    mode: 'auto',
+    mediaModels: listMediaModels(config(FULL_PARAMS)),
+  })
+    .map((n) => n.content)
+    .join('\n')
+  expect(text).toContain('参考图最多 30 张')
+  expect(text).toContain('参考视频最多 10 个')
+  expect(text).toContain('参考音频最多 10 段')
+  expect(findMediaModel(EXCLUSIVE)!.inputs.maxVideos).toBe(0)
+  expect(findMediaModel(MODEL)!.params.find((p) => p.name === 'seconds')?.values).toEqual(['30'])
+})
+
+test.each([undefined, '30'])('满血全参版按实际接口固定 30 秒，保持字符串：%s', async (seconds) => {
+  const result = await makeMediaPort(config(FULL_PARAMS)).generate(
+    call({ params: seconds === undefined ? {} : { seconds, size: '720x1280' } }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, model: FULL_PARAMS })
+  expect(seen[0]?.body).toEqual({
+    model: FULL_PARAMS,
+    prompt: PROMPT,
+    seconds: seconds ?? '30',
+    size: seconds === undefined ? '1280x720' : '720x1280',
+  })
+})
+
+const fullInput = (role: 'reference' | 'video' | 'audio', i = 0) => ({
+  role,
+  bytes: new Uint8Array([...(role === 'reference' ? PNG : role === 'video' ? MP4 : MP3), i]),
+  mime: role === 'reference' ? 'image/png' : role === 'video' ? 'video/mp4' : 'audio/mpeg',
+  path: `/reference-${role}-${i}`,
+})
+
+test('满血全参版混合素材分别进入 images、videos、audios 并保持各自顺序', async () => {
+  const inputs = [
+    fullInput('video', 1),
+    fullInput('audio', 1),
+    fullInput('reference', 1),
+    fullInput('video', 2),
+    fullInput('reference', 2),
+    fullInput('audio', 2),
+  ]
+  expect(
+    await makeMediaPort(config(FULL_PARAMS)).generate(call({ inputs }), signal()),
+  ).toMatchObject({ ok: true })
+  const field = (role: string) =>
+    inputs
+      .filter((i) => i.role === role)
+      .map((i) => `data:${i.mime};base64,${Buffer.from(i.bytes).toString('base64')}`)
+  expect(seen[0]?.body).toEqual({
+    model: FULL_PARAMS,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1280x720',
+    images: field('reference'),
+    videos: field('video'),
+    audios: field('audio'),
+  })
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+    'POST /v1/videos',
+    `GET /v1/video/generations/${TASK}`,
+    `GET /v1/videos/${TASK}/content`,
+  ])
+})
+
+test('满血全参版允许单独视频参考，图片和音频字段不伪造', async () => {
+  const input = fullInput('video')
+  expect(
+    await makeMediaPort(config(FULL_PARAMS)).generate(call({ inputs: [input] }), signal()),
+  ).toMatchObject({ ok: true })
+  expect(seen[0]?.body).toEqual({
+    model: FULL_PARAMS,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1280x720',
+    videos: [`data:video/mp4;base64,${Buffer.from(input.bytes).toString('base64')}`],
+  })
+})
+
+test.each([
+  [30, 10, 10, true],
+  [31, 10, 10, false],
+  [30, 11, 10, false],
+  [30, 10, 11, false],
+] as const)(
+  '满血全参版各类素材独立校验数量：%i 图、%i 视频、%i 音频',
+  async (images, videos, audios, ok) => {
+    const inputs = [
+      ...Array.from({ length: images }, (_, i) => fullInput('reference', i)),
+      ...Array.from({ length: videos }, (_, i) => fullInput('video', i)),
+      ...Array.from({ length: audios }, (_, i) => fullInput('audio', i)),
+    ]
+    expect(
+      await makeMediaPort(config(FULL_PARAMS)).generate(call({ inputs }), signal()),
+    ).toMatchObject(ok ? { ok: true } : { ok: false, executed: false })
+    expect(seen.some((s) => s.method === 'POST')).toBe(ok)
+  },
+)
+
+test.each([
+  { seconds: '3' },
+  { seconds: '31' },
+  { seconds: '4.5' },
+  { seconds: 10 },
+  { seconds: '4' },
+  { seconds: '10' },
+  { seconds: '15' },
+  { size: '1920x1080' },
+  { face: true },
+  { fps: 60 },
+  { temperature: 0.7 },
+])('满血全参版不把名称中的全参解释为任意参数：%j', async (params) => {
+  expect(
+    await makeMediaPort(config(FULL_PARAMS)).generate(call({ params }), signal()),
+  ).toMatchObject({ ok: false, executed: false })
+  expect(seen).toEqual([])
+})
+
+test('满血全参版非 MP3 音频与视频混用时仍在提交前拒绝', async () => {
+  const result = await makeMediaPort(config(FULL_PARAMS)).generate(
+    call({
+      inputs: [
+        fullInput('video'),
+        { role: 'audio', bytes: MP4, mime: 'audio/mpeg', path: '/fake.mp3' },
+      ],
+    }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: false })
+  if (result.ok) throw new Error('expected failure')
+  expect(result.message).toContain('仅支持 MP3')
+  expect(seen).toEqual([])
+})
+
+test.each([false, true])(
+  'NOT_START 继续等待原任务，不提前进入待取回：resume=%s',
+  async (resume) => {
+    taskStatuses = ['NOT_START']
+    const phases: string[] = []
+    const result = await makeMediaPort(config(FULL_PARAMS)).generate(
+      call({
+        ...(resume ? { resumeTaskId: TASK } : {}),
+        onStatus: (s) => phases.push(s),
+      }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, model: FULL_PARAMS })
+    expect(phases).toEqual(['queued'])
+    expect(seen.filter((s) => s.method === 'POST')).toHaveLength(resume ? 0 : 1)
+    expect(seen.filter((s) => s.path === `/v1/video/generations/${TASK}`)).toHaveLength(2)
+    expect(seen.at(-1)?.path).toBe(`/v1/videos/${TASK}/content`)
+  },
+  10000,
 )

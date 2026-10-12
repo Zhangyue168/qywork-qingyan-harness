@@ -19,6 +19,26 @@ const SIZE: MediaParamSpec = {
   description: '720P 横屏 1280x720 或竖屏 720x1280',
 }
 
+const SECONDS: MediaParamSpec = {
+  name: 'seconds',
+  label: '时长',
+  type: 'enum',
+  values: Array.from({ length: 27 }, (_, i) => String(i + 4)),
+  valueLabels: Object.fromEntries(Array.from({ length: 27 }, (_, i) => [i + 4, `${i + 4}秒`])),
+  default: '5',
+  description: '4–30 秒整数，使用字符串',
+}
+
+const FIXED_SECONDS: MediaParamSpec = {
+  name: 'seconds',
+  label: '时长',
+  type: 'enum',
+  values: ['30'],
+  valueLabels: { '30': '30秒' },
+  default: '30',
+  description: '固定 30 秒，使用字符串 "30"',
+}
+
 export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
   {
     id: '满血sd2.5(30-10-10原生过人脸/720P)',
@@ -28,18 +48,7 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     videoFormat: 'mumugofe',
     operations: ['text_to_video', 'reference_to_video'],
     inputs: { maxImages: 30, maxVideos: 0, maxAudios: 0, transport: 'json' },
-    params: [
-      {
-        name: 'seconds',
-        label: '时长',
-        type: 'enum',
-        values: ['30'],
-        valueLabels: { '30': '30秒' },
-        default: '30',
-        description: '固定 30 秒，使用字符串 "30"',
-      },
-      SIZE,
-    ],
+    params: [FIXED_SECONDS, SIZE],
     catalogued: true,
   },
   {
@@ -50,20 +59,19 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     videoFormat: 'mumugofe',
     operations: ['text_to_video', 'reference_to_video'],
     inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
-    params: [
-      {
-        name: 'seconds',
-        label: '时长',
-        type: 'enum',
-        values: Array.from({ length: 27 }, (_, i) => String(i + 4)),
-        valueLabels: Object.fromEntries(
-          Array.from({ length: 27 }, (_, i) => [i + 4, `${i + 4}秒`]),
-        ),
-        default: '5',
-        description: '4–30 秒整数，使用字符串',
-      },
-      SIZE,
-    ],
+    params: [SECONDS, SIZE],
+    catalogued: true,
+  },
+  {
+    id: '高质量sd2.5(满血全参/720P/按次)',
+    displayName: '高质量 SD2.5 · 满血全参 · 720P',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
+    // 2026-10-12 实际接口以 HTTP 400 拒绝 15 秒并要求固定 30 秒，覆盖公开目录的 4–30 秒声明。
+    params: [FIXED_SECONDS, SIZE],
     catalogued: true,
   },
 ]
