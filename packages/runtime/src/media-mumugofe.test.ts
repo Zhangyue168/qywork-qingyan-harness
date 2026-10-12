@@ -1,13 +1,14 @@
 /** Mumugofe 从已配置模型、参数校验到实际 HTTP 请求与任务恢复的回归测试。 */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
 import type { MediaCall } from '@qywork/agent'
-import { findMediaModel, lookupMediaModel, mediaKindsOf } from '@qywork/ai'
+import { findMediaModel, lookupMediaModel, mediaCatalog, mediaKindsOf } from '@qywork/ai'
 import type { MediaInputRole, MediaSpend } from '@qywork/core'
 import { listMediaModels, type QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
 
 const MODEL = '满血sd2.5(30-10-10原生过人脸/720P)'
+const VIDEO_30S = 'video-sd25-30s'
 const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
 const FULL_PARAMS = '高质量sd2.5(满血全参/720P/按次)'
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
@@ -24,6 +25,8 @@ interface Seen {
   auth: string | null
   contentType: string | null
   body?: unknown
+  form?: Awaited<ReturnType<Request['formData']>>
+  rawForm?: string
 }
 let server: ReturnType<typeof Bun.serve>
 let seen: Seen[]
@@ -37,12 +40,17 @@ beforeAll(() => {
     port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname
+      const multipart =
+        req.method === 'POST' && req.headers.get('content-type')?.startsWith('multipart/form-data')
+      const rawForm = multipart ? await req.clone().text() : undefined
+      const form = multipart ? await req.formData() : undefined
       seen.push({
         method: req.method,
         path,
         auth: req.headers.get('authorization'),
         contentType: req.headers.get('content-type'),
-        ...(req.method === 'POST' ? { body: await req.json() } : {}),
+        ...(form ? { form } : req.method === 'POST' ? { body: await req.json() } : {}),
+        ...(rawForm === undefined ? {} : { rawForm }),
       })
       if (req.method === 'POST' && path === '/v1/videos')
         return Response.json({ id: TASK, status: 'queued', object: 'video' })
@@ -116,8 +124,10 @@ test('渠道型号在模型库和 Agent 参数表中使用自己的协议与能�
   expect(spec.vendor).toBe('Mumugofe')
   expect(spec.catalogued).toBe(true)
   expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
-  expect(spec.operations).toEqual(['text_to_video', 'reference_to_video'])
+  expect(spec.operations).toEqual(['text_to_video', 'reference_to_video', 'video_to_video'])
   expect(spec.inputs.maxImages).toBe(30)
+  expect(spec.inputs.maxVideos).toBe(10)
+  expect(spec.inputs.maxAudios).toBe(10)
   expect(spec.price).toBeUndefined()
   expect(lookupMediaModel(MODEL, 'ark_videos').catalogued).toBe(false)
   const text = buildTailNotes({
@@ -132,6 +142,8 @@ test('渠道型号在模型库和 Agent 参数表中使用自己的协议与能�
   expect(text).toContain('seconds：30')
   expect(text).toContain('1280x720')
   expect(text).toContain('720x1280')
+  expect(text).toContain('参考视频最多 10 个')
+  expect(text).toContain('参考音频最多 10 段')
   expect(text).not.toContain('temperature')
   expect(text).not.toContain('generate_audio')
 })
@@ -228,7 +240,7 @@ test.each([
   expect(seen).toEqual([])
 })
 
-test.each<MediaInputRole>(['first_frame', 'last_frame', 'video', 'audio'])(
+test.each<MediaInputRole>(['first_frame', 'last_frame'])(
   '未完成适配的素材不能被静默丢弃：%s',
   async (role) => {
     const result = await makeMediaPort(config()).generate(
@@ -269,8 +281,8 @@ test('远端明确失败时返回任务接口中的拒绝原因，不下载或�
   ])
 })
 
-test('专享版独立登记能力，Agent 可见参考音频上限，不继承满血版固定时长', () => {
-  const spec = findMediaModel(EXCLUSIVE)!
+test('下架专享版保留旧配置规格，不继承满血版固定时长', () => {
+  const spec = lookupMediaModel(EXCLUSIVE, 'openai_videos')
   expect(spec).toMatchObject({
     vendor: 'Mumugofe',
     videoFormat: 'mumugofe',
@@ -289,7 +301,7 @@ test('专享版独立登记能力，Agent 可见参考音频上限，不继承�
     .join('\n')
   expect(text).toContain('参考音频最多 10 段')
   expect(text).toContain('4–30 秒整数，使用字符串')
-  expect(findMediaModel(MODEL)!.inputs.maxAudios).toBe(0)
+  expect(findMediaModel(MODEL)!.inputs.maxAudios).toBe(10)
 })
 
 test.each([undefined, '4', '17', '30'])(
@@ -435,8 +447,8 @@ test.each(['audio/wav', 'audio/mp4', 'audio/mpeg'])(
   },
 )
 
-test('满血全参版独立开放图、视频、音频，Agent 可见上限，原有型号能力不变', () => {
-  const spec = findMediaModel(FULL_PARAMS)!
+test('下架高质量版保留旧配置的图、视频、音频规格', () => {
+  const spec = lookupMediaModel(FULL_PARAMS, 'openai_videos')
   expect(spec).toMatchObject({
     vendor: 'Mumugofe',
     videoFormat: 'mumugofe',
@@ -456,7 +468,7 @@ test('满血全参版独立开放图、视频、音频，Agent 可见上限，�
   expect(text).toContain('参考图最多 30 张')
   expect(text).toContain('参考视频最多 10 个')
   expect(text).toContain('参考音频最多 10 段')
-  expect(findMediaModel(EXCLUSIVE)!.inputs.maxVideos).toBe(0)
+  expect(lookupMediaModel(EXCLUSIVE, 'openai_videos').inputs.maxVideos).toBe(0)
   expect(findMediaModel(MODEL)!.params.find((p) => p.name === 'seconds')?.values).toEqual(['30'])
 })
 
@@ -480,6 +492,188 @@ const fullInput = (role: 'reference' | 'video' | 'audio', i = 0) => ({
   mime: role === 'reference' ? 'image/png' : role === 'video' ? 'video/mp4' : 'audio/mpeg',
   path: `/reference-${role}-${i}`,
 })
+
+test('模型库只收录满血版与 video-sd25-30s，下架两项保留旧任务取回规格', () => {
+  expect(
+    mediaCatalog()
+      .filter((m) => m.vendor === 'Mumugofe')
+      .map((m) => m.id),
+  ).toEqual([MODEL, VIDEO_30S])
+  for (const id of [EXCLUSIVE, FULL_PARAMS]) {
+    expect(findMediaModel(id)).toBeUndefined()
+    expect(lookupMediaModel(id, 'openai_videos')).toMatchObject({
+      catalogued: false,
+      videoFormat: 'mumugofe',
+    })
+    expect(lookupMediaModel(id, 'ark_videos').videoFormat).toBeUndefined()
+  }
+})
+
+test.each([EXCLUSIVE, FULL_PARAMS, MODEL, VIDEO_30S])(
+  '当前与下架型号取回仅查询下载原任务：%s',
+  async (model) => {
+    expect(
+      await makeMediaPort(config(model)).generate(call({ resumeTaskId: TASK }), signal()),
+    ).toMatchObject({ ok: true, model })
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+      `GET /v1/video/generations/${TASK}`,
+      `GET /v1/videos/${TASK}/content`,
+    ])
+  },
+)
+
+test('满血版混合图、视频、音频按类别保序提交 JSON，素材不丢失', async () => {
+  const inputs = [
+    fullInput('video', 1),
+    fullInput('audio', 1),
+    fullInput('reference', 1),
+    fullInput('video', 2),
+    fullInput('reference', 2),
+    fullInput('audio', 2),
+  ]
+  expect(await makeMediaPort(config()).generate(call({ inputs }), signal())).toMatchObject({
+    ok: true,
+  })
+  const field = (role: string) =>
+    inputs
+      .filter((i) => i.role === role)
+      .map((i) => `data:${i.mime};base64,${Buffer.from(i.bytes).toString('base64')}`)
+  expect(seen[0]?.contentType).toContain('application/json')
+  expect(seen[0]?.body).toEqual({
+    model: MODEL,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1280x720',
+    images: field('reference'),
+    videos: field('video'),
+    audios: field('audio'),
+  })
+})
+
+test.each([
+  [30, 10, 10, true],
+  [31, 10, 10, false],
+  [30, 11, 10, false],
+  [30, 10, 11, false],
+] as const)('满血版参考素材边界：%i 图、%i 视频、%i 音频', async (images, videos, audios, ok) => {
+  const inputs = [
+    ...Array.from({ length: images }, (_, i) => fullInput('reference', i)),
+    ...Array.from({ length: videos }, (_, i) => fullInput('video', i)),
+    ...Array.from({ length: audios }, (_, i) => fullInput('audio', i)),
+  ]
+  expect(await makeMediaPort(config()).generate(call({ inputs }), signal())).toMatchObject(
+    ok ? { ok: true } : { ok: false, executed: false },
+  )
+  expect(seen.some((s) => s.method === 'POST')).toBe(ok)
+})
+
+test.each([{}, { seconds: '30', size: '720x1280' }])(
+  'video-sd25-30s 文生视频使用固定 30 秒：%j',
+  async (params) => {
+    expect(
+      await makeMediaPort(config(VIDEO_30S)).generate(call({ params }), signal()),
+    ).toMatchObject({ ok: true })
+    expect(seen[0]?.body).toEqual({
+      model: VIDEO_30S,
+      prompt: PROMPT,
+      seconds: '30',
+      size: params.size ?? '1280x720',
+    })
+    expect(seen[0]?.contentType).toContain('application/json')
+  },
+)
+
+test.each([1, 30])(
+  'video-sd25-30s 多图与音频混合：%i 个 input_reference 文件与 JSON audios',
+  async (images) => {
+    const refs = Array.from({ length: images }, (_, i) => fullInput('reference', i))
+    const audios = Array.from({ length: 10 }, (_, i) => fullInput('audio', i))
+    const inputs = [audios[0]!, ...refs, ...audios.slice(1)]
+    let saved = false
+    expect(
+      await makeMediaPort(config(VIDEO_30S)).generate(
+        call({
+          inputs,
+          params: { size: '720x1280' },
+          onTask: async () => {
+            expect(seen.map((s) => s.method)).toEqual(['POST'])
+            saved = true
+          },
+        }),
+        signal(),
+      ),
+    ).toMatchObject({ ok: true })
+    expect(saved).toBe(true)
+    expect(seen[0]?.contentType).toContain('multipart/form-data; boundary=')
+    const form = seen[0]!.form!
+    expect(form.get('model')).toBe(VIDEO_30S)
+    // multipart 表单按标准将字段换行规范化为 CRLF。
+    expect(form.get('prompt')).toBe(PROMPT.replace(/\n/g, '\r\n'))
+    expect(form.get('seconds')).toBe('30')
+    expect(form.get('size')).toBe('720x1280')
+    expect(form.has('images')).toBe(false)
+    expect(form.has('videos')).toBe(false)
+    const files = form.getAll('input_reference') as File[]
+    expect(files).toHaveLength(images)
+    // Bun 的 formData 解码器会按扩展名重建 type；检查实际发送的 Content-Type。
+    expect(seen[0]?.rawForm?.match(/Content-Type: image\/png/g)).toHaveLength(images)
+    for (const [i, file] of files.entries()) {
+      expect(new Uint8Array(await file.arrayBuffer())).toEqual(refs[i]!.bytes)
+    }
+    expect(JSON.parse(String(form.get('audios')))).toEqual(
+      audios.map((i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`),
+    )
+    expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
+  },
+)
+
+test('video-sd25-30s 单独 MP3 参考使用 JSON audios', async () => {
+  const input = { ...fullInput('audio'), mime: 'audio/mp3' }
+  expect(
+    await makeMediaPort(config(VIDEO_30S)).generate(call({ inputs: [input] }), signal()),
+  ).toMatchObject({ ok: true })
+  expect(seen[0]?.body).toEqual({
+    model: VIDEO_30S,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1280x720',
+    audios: [`data:audio/mpeg;base64,${Buffer.from(input.bytes).toString('base64')}`],
+  })
+})
+
+test.each([{ seconds: '5' }, { seconds: 30 }, { size: '1920x1080' }, { temperature: 0.7 }])(
+  'video-sd25-30s 非法参数在提交前拒绝：%j',
+  async (params) => {
+    expect(
+      await makeMediaPort(config(VIDEO_30S)).generate(call({ params }), signal()),
+    ).toMatchObject({ ok: false, executed: false })
+    expect(seen).toEqual([])
+  },
+)
+
+test.each([
+  ['reference', 31],
+  ['audio', 11],
+  ['video', 1],
+] as const)('video-sd25-30s 拒绝越界素材及参考视频：%s=%i', async (role, count) => {
+  const inputs = Array.from({ length: count }, (_, i) => fullInput(role, i))
+  expect(await makeMediaPort(config(VIDEO_30S)).generate(call({ inputs }), signal())).toMatchObject(
+    { ok: false, executed: false },
+  )
+  expect(seen).toEqual([])
+})
+
+test.each([MODEL, VIDEO_30S])(
+  '当前型号拒绝伪装 MP3 的音频，图片也不提前提交：%s',
+  async (model) => {
+    const inputs = [fullInput('reference'), { ...fullInput('audio'), bytes: MP4 }]
+    const result = await makeMediaPort(config(model)).generate(call({ inputs }), signal())
+    expect(result).toMatchObject({ ok: false })
+    if (result.ok) throw new Error('expected failure')
+    expect(result.message).toContain('仅支持 MP3')
+    expect(seen).toEqual([])
+  },
+)
 
 test('满血全参版混合素材分别进入 images、videos、audios 并保持各自顺序', async () => {
   const inputs = [

@@ -1,8 +1,7 @@
 /**
  * Mumugofe 渠道：满血版于 2026-10-10 实测 /v1/videos 提交、查询、下载与视频解码。
- * 渠道插件目录声明 30 张参考图、横竖屏；已完成单图参考与竖屏成片验证。
- * 满血版的独立请求已验证视频参考的动作生效，内置适配器尚未接通其音视频输入。
- * 专享版按渠道插件 0.2.7 接入最多 10 段 MP3 音频，时长为 4–30 秒整数。
+ * 满血版按渠道模型页开放 30 图、10 视频、10 音频，复用已验证的 JSON 素材字段。
+ * video-sd25-30s 按 2026-10-12 渠道目录与插件 0.2.9 使用 multipart 参考图、固定 30 秒。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -46,11 +45,26 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     vendor: 'Mumugofe',
     kind: 'openai_videos',
     videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video'],
-    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 0, transport: 'json' },
+    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
     params: [FIXED_SECONDS, SIZE],
     catalogued: true,
   },
+  {
+    id: 'video-sd25-30s',
+    displayName: '全能视频 2.5 · 720P · 30秒',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'multipart' },
+    params: [FIXED_SECONDS, SIZE],
+    catalogued: true,
+  },
+]
+
+/** 已从内置模型库下架；旧配置和已提交任务仍按原协议解析，避免取回改走通用端点。 */
+export const MUMUGOFE_RETIRED_MODELS: readonly MediaModelSpec[] = [
   {
     id: '专享sd2.5(30图10音/4-30秒/720p)',
     displayName: '专享 SD2.5 · 720P · 4–30秒',
@@ -60,7 +74,7 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     operations: ['text_to_video', 'reference_to_video'],
     inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
     params: [SECONDS, SIZE],
-    catalogued: true,
+    catalogued: false,
   },
   {
     id: '高质量sd2.5(满血全参/720P/按次)',
@@ -72,6 +86,6 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
     // 2026-10-12 实际接口以 HTTP 400 拒绝 15 秒并要求固定 30 秒，覆盖公开目录的 4–30 秒声明。
     params: [FIXED_SECONDS, SIZE],
-    catalogued: true,
+    catalogued: false,
   },
 ]
