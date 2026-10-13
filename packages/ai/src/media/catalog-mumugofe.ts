@@ -1,8 +1,8 @@
 /**
  * Mumugofe 渠道：满血版于 2026-10-10 实测 /v1/videos 提交、查询、下载与视频解码。
  * 满血版按渠道模型页开放 30 图、10 视频、10 音频，复用已验证的 JSON 素材字段。
- * video-sd25-30s 按 2026-10-12 渠道目录与插件 0.2.9 使用 multipart 参考图、固定 30 秒。
- * 1080P 超分版按 2026-10-13 渠道目录接入 JSON、固定 30 秒与 30 图，不支持视频或音频参考。
+ * 006 系列按 2026-10-13 渠道目录使用 JSON；720P 为 4–15 秒，480P 为 4–30 秒。
+ * sd-25-30/10/1-1 按 2026-10-13 渠道目录使用 multipart 参考图，开放 15/30 秒及 30 图、10 视频、10 音频。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -39,28 +39,47 @@ const FIXED_SECONDS: MediaParamSpec = {
   description: '固定 30 秒，使用字符串 "30"',
 }
 
-const UPSCALED_SIZE: MediaParamSpec = {
-  name: 'size',
-  label: '尺寸',
-  type: 'string',
-  shapes: [
-    { ratio: '16:9', tier: '1080P', value: '1920x1080' },
-    { ratio: '9:16', tier: '1080P', value: '1080x1920' },
+const FULL_REFERENCE_SECONDS: MediaParamSpec = {
+  name: 'seconds',
+  label: '时长',
+  type: 'enum',
+  values: ['15', '30'],
+  valueLabels: { '15': '15秒', '30': '30秒' },
+  default: '30',
+  description: '15 或 30 秒，使用字符串',
+}
+
+const SERIES_006_SECONDS: MediaParamSpec = {
+  ...SECONDS,
+  description: '字符串整数时长：720P 为 4–15 秒，480P 为 4–30 秒',
+  rules: [
+    {
+      when: { params: { size: ['1280x720', '720x1280'] } },
+      values: Array.from({ length: 12 }, (_, i) => String(i + 4)),
+    },
   ],
-  default: '1920x1080',
-  description: '1080P 超分横屏 1920x1080 或竖屏 1080x1920',
+}
+
+const SERIES_006_SIZE: MediaParamSpec = {
+  ...SIZE,
+  shapes: [
+    ...SIZE.shapes!,
+    { ratio: '16:9', tier: '480P', value: '854x480' },
+    { ratio: '9:16', tier: '480P', value: '480x854' },
+  ],
+  description: '720P：1280x720 或 720x1280；480P：854x480 或 480x854',
 }
 
 export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
   {
-    id: '全能sd2.5(满血内置过脸30图超分1080P)',
-    displayName: '全能 SD2.5 · 1080P 超分 · 30秒',
+    id: 'sd-25-30/10/1-1',
+    displayName: 'Seedance 2.5 · 满参 · 720P · 15/30秒',
     vendor: 'Mumugofe',
     kind: 'openai_videos',
     videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video'],
-    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 0, transport: 'json' },
-    params: [FIXED_SECONDS, UPSCALED_SIZE],
+    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'multipart' },
+    params: [FULL_REFERENCE_SECONDS, SIZE],
     catalogued: true,
   },
   {
@@ -75,14 +94,14 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     catalogued: true,
   },
   {
-    id: 'video-sd25-30s',
-    displayName: '全能视频 2.5 · 720P · 30秒',
+    id: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
+    displayName: '006 系列 SD2.5 · 满参 · 720P/480P',
     vendor: 'Mumugofe',
     kind: 'openai_videos',
     videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video'],
-    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'multipart' },
-    params: [FIXED_SECONDS, SIZE],
+    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
+    params: [SERIES_006_SECONDS, SERIES_006_SIZE],
     catalogued: true,
   },
 ]
