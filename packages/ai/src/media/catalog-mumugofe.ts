@@ -2,6 +2,7 @@
  * Mumugofe 渠道：满血版于 2026-10-10 实测 /v1/videos 提交、查询、下载与视频解码。
  * 满血版按渠道模型页开放 30 图、10 视频、10 音频，复用已验证的 JSON 素材字段。
  * video-sd25-30s 按 2026-10-12 渠道目录与插件 0.2.9 使用 multipart 参考图、固定 30 秒。
+ * 高质量全参原生版按 2026-10-13 渠道目录接入 JSON、4–30 秒、30 图与 10 音频，不支持视频参考。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -59,6 +60,17 @@ export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
     operations: ['text_to_video', 'reference_to_video'],
     inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'multipart' },
     params: [FIXED_SECONDS, SIZE],
+    catalogued: true,
+  },
+  {
+    id: '高质量sd2.5/(全参原生过真人速度快720P)',
+    displayName: '高质量 SD2.5 · 全参 · 720P · 4–30秒',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
+    params: [SECONDS, SIZE],
     catalogued: true,
   },
 ]
