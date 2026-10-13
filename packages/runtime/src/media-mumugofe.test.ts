@@ -10,6 +10,7 @@ import { buildTailNotes } from './prompt.ts'
 const MODEL = '满血sd2.5(30-10-10原生过人脸/720P)'
 const VIDEO_30S = 'video-sd25-30s'
 const HIGH_QUALITY = '高质量sd2.5/(全参原生过真人速度快720P)'
+const UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const EXCLUSIVE = '专享sd2.5(30图10音/4-30秒/720p)'
 const FULL_PARAMS = '高质量sd2.5(满血全参/720P/按次)'
 const PROMPT = '雨后咖啡馆，一位成年女性坐下阅读。\n镜头缓慢后退，人物望向窗外微笑。'
@@ -361,29 +362,24 @@ test('图片和 MP3 交错输入时按类别保持顺序，音频别名统一成
   })
 })
 
-test.each([EXCLUSIVE, HIGH_QUALITY])(
-  '%s 允许单独音频参考，最多 10 段，不伪造 images 字段',
-  async (model) => {
-    const inputs = Array.from({ length: 10 }, (_, i) => ({
-      role: 'audio' as const,
-      bytes: new Uint8Array([...MP3, i]),
-      mime: 'audio/mpeg',
-      path: `/voice-${i}.mp3`,
-    }))
-    expect(await makeMediaPort(config(model)).generate(call({ inputs }), signal())).toMatchObject({
-      ok: true,
-    })
-    expect(seen[0]?.body).toEqual({
-      model,
-      prompt: PROMPT,
-      seconds: '5',
-      size: '1280x720',
-      audios: inputs.map(
-        (i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`,
-      ),
-    })
-  },
-)
+test.each([EXCLUSIVE])('%s 允许单独音频参考，最多 10 段，不伪造 images 字段', async (model) => {
+  const inputs = Array.from({ length: 10 }, (_, i) => ({
+    role: 'audio' as const,
+    bytes: new Uint8Array([...MP3, i]),
+    mime: 'audio/mpeg',
+    path: `/voice-${i}.mp3`,
+  }))
+  expect(await makeMediaPort(config(model)).generate(call({ inputs }), signal())).toMatchObject({
+    ok: true,
+  })
+  expect(seen[0]?.body).toEqual({
+    model,
+    prompt: PROMPT,
+    seconds: '5',
+    size: '1280x720',
+    audios: inputs.map((i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`),
+  })
+})
 
 test.each([
   ['reference', 31],
@@ -497,12 +493,14 @@ const fullInput = (role: 'reference' | 'video' | 'audio', i = 0) => ({
   path: `/reference-${role}-${i}`,
 })
 
-test('模型库收录当前三项，下架两项保留旧任务取回规格', () => {
+test('模型库收录当前型号，下架型号保留旧任务取回规格', () => {
   expect(
     mediaCatalog()
       .filter((m) => m.vendor === 'Mumugofe')
       .map((m) => m.id),
-  ).toEqual([MODEL, VIDEO_30S, HIGH_QUALITY])
+  ).toEqual([UPSCALED, MODEL, VIDEO_30S])
+  expect(findMediaModel(HIGH_QUALITY)).toBeUndefined()
+  expect(lookupMediaModel(HIGH_QUALITY, 'openai_videos').videoFormat).toBeUndefined()
   for (const id of [EXCLUSIVE, FULL_PARAMS]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos')).toMatchObject({
@@ -513,7 +511,7 @@ test('模型库收录当前三项，下架两项保留旧任务取回规格', ()
   }
 })
 
-test.each([EXCLUSIVE, FULL_PARAMS, MODEL, VIDEO_30S, HIGH_QUALITY])(
+test.each([EXCLUSIVE, FULL_PARAMS, MODEL, VIDEO_30S, UPSCALED])(
   '当前与下架型号取回仅查询下载原任务：%s',
   async (model) => {
     expect(
@@ -584,6 +582,128 @@ test.each([{}, { seconds: '30', size: '720x1280' }])(
       size: params.size ?? '1280x720',
     })
     expect(seen[0]?.contentType).toContain('application/json')
+  },
+)
+
+test('1080P 超分版在模型库与 Agent 参数中保持独立尺寸', () => {
+  const spec = findMediaModel(UPSCALED)!
+  expect(spec).toMatchObject({
+    displayName: '全能 SD2.5 · 1080P 超分 · 30秒',
+    vendor: 'Mumugofe',
+    kind: 'openai_videos',
+    videoFormat: 'mumugofe',
+    catalogued: true,
+    operations: ['text_to_video', 'reference_to_video'],
+    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 0, transport: 'json' },
+  })
+  expect(spec.price).toBeUndefined()
+  expect(lookupMediaModel(UPSCALED, 'ark_videos').catalogued).toBe(false)
+  const text = buildTailNotes({
+    workspaceRoot: '/w',
+    platform: 'win32',
+    mode: 'auto',
+    mediaModels: listMediaModels(config(UPSCALED)),
+  })
+    .map((n) => n.content)
+    .join('\n')
+  expect(text).toContain(UPSCALED)
+  expect(text).toContain('seconds：30')
+  expect(text).toContain('1920x1080')
+  expect(text).toContain('1080x1920')
+  expect(text).toContain('参考图最多 30 张')
+  expect(text).not.toContain('1280x720')
+  expect(text).not.toContain('参考音频最多')
+  expect(text).not.toContain('参考视频最多')
+})
+
+test.each([{}, { seconds: '30', size: '1080x1920' }])(
+  '1080P 超分版发送固定 30 秒及对应横竖屏，保存任务后查询下载：%j',
+  async (params) => {
+    const tasks: unknown[] = []
+    const spends: MediaSpend[] = []
+    expect(
+      await makeMediaPort(config(UPSCALED), (spend) => spends.push(spend)).generate(
+        call({
+          params,
+          onTask: async (task) => {
+            expect(seen.map((s) => s.method)).toEqual(['POST'])
+            tasks.push(task)
+          },
+        }),
+        signal(),
+      ),
+    ).toMatchObject({ ok: true, model: UPSCALED, files: [{ bytes: MP4, mime: 'video/mp4' }] })
+    expect(tasks).toEqual([{ taskId: TASK, provider: 'mumugofe', model: UPSCALED }])
+    expect(seen[0]?.body).toEqual({
+      model: UPSCALED,
+      prompt: PROMPT,
+      seconds: '30',
+      size: params.size ?? '1920x1080',
+    })
+    expect(seen[0]?.contentType).toContain('application/json')
+    expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
+      'POST /v1/videos',
+      `GET /v1/video/generations/${TASK}`,
+      `GET /v1/videos/${TASK}/content`,
+    ])
+    expect(spends).toHaveLength(1)
+    expect(spends[0]).toMatchObject({ quantity: null, cost: 0 })
+  },
+)
+
+test.each([
+  { seconds: '5' },
+  { seconds: 30 },
+  { size: '1280x720' },
+  { size: '720x1280' },
+  { size: '1080p' },
+  { face: true },
+  { temperature: 0.7 },
+])('1080P 超分版拒绝其他时长、720P 尺寸及未开放参数：%j', async (params) => {
+  expect(await makeMediaPort(config(UPSCALED)).generate(call({ params }), signal())).toMatchObject({
+    ok: false,
+    executed: false,
+  })
+  expect(seen).toEqual([])
+})
+
+test.each([1, 30])('1080P 超分版参考图按顺序发送 PNG data URI：%i 张', async (count) => {
+  const inputs = Array.from({ length: count }, (_, i) => fullInput('reference', i))
+  expect(
+    await makeMediaPort(config(UPSCALED)).generate(
+      call({ inputs, params: { size: '1080x1920' } }),
+      signal(),
+    ),
+  ).toMatchObject({ ok: true })
+  expect(seen[0]?.body).toEqual({
+    model: UPSCALED,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1080x1920',
+    images: inputs.map((i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`),
+  })
+})
+
+test('1080P 超分版超过 30 张参考图时不提交', async () => {
+  const inputs = Array.from({ length: 31 }, (_, i) => fullInput('reference', i))
+  expect(await makeMediaPort(config(UPSCALED)).generate(call({ inputs }), signal())).toMatchObject({
+    ok: false,
+    executed: false,
+  })
+  expect(seen).toEqual([])
+})
+
+test.each<MediaInputRole>(['video', 'audio', 'first_frame', 'last_frame'])(
+  '1080P 超分版不提交未开放的参考素材：%s',
+  async (role) => {
+    expect(
+      await makeMediaPort(config(UPSCALED)).generate(
+        call({ inputs: [{ ...fullInput(role === 'audio' ? 'audio' : 'reference'), role }] }),
+        signal(),
+      ),
+    ).toMatchObject({ ok: false, executed: false })
+    expect(seen).toEqual([])
   },
 )
 
@@ -667,7 +787,7 @@ test.each([
   expect(seen).toEqual([])
 })
 
-test.each([MODEL, VIDEO_30S, HIGH_QUALITY])(
+test.each([MODEL, VIDEO_30S])(
   '当前型号拒绝伪装 MP3 的音频，图片也不提前提交：%s',
   async (model) => {
     const inputs = [fullInput('reference'), { ...fullInput('audio'), bytes: MP4 }]
@@ -678,115 +798,6 @@ test.each([MODEL, VIDEO_30S, HIGH_QUALITY])(
     expect(seen).toEqual([])
   },
 )
-
-test('新高质量全参版在 Agent 参数表中声明 4–30 秒与图音参考，不继承旧型号的视频能力', () => {
-  const spec = findMediaModel(HIGH_QUALITY)!
-  expect(spec).toMatchObject({
-    catalogued: true,
-    vendor: 'Mumugofe',
-    videoFormat: 'mumugofe',
-    inputs: { maxImages: 30, maxVideos: 0, maxAudios: 10, transport: 'json' },
-    operations: ['text_to_video', 'reference_to_video'],
-  })
-  expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
-  expect(lookupMediaModel(HIGH_QUALITY, 'ark_videos').catalogued).toBe(false)
-  const text = buildTailNotes({
-    workspaceRoot: '/w',
-    platform: 'win32',
-    mode: 'auto',
-    mediaModels: listMediaModels(config(HIGH_QUALITY)),
-  })
-    .map((n) => n.content)
-    .join('\n')
-  expect(text).toContain(HIGH_QUALITY)
-  expect(text).toContain('4–30 秒整数，使用字符串')
-  expect(text).toContain('参考图最多 30 张')
-  expect(text).toContain('参考音频最多 10 段')
-  expect(text).not.toContain('参考视频最多')
-  expect(text).not.toContain('temperature')
-})
-
-test.each([undefined, '4', '17', '30'])(
-  '新高质量全参版使用准确 ID 与字符串时长：%s',
-  async (seconds) => {
-    const spends: MediaSpend[] = []
-    expect(
-      await makeMediaPort(config(HIGH_QUALITY), (spend) => spends.push(spend)).generate(
-        call({ params: seconds === undefined ? {} : { seconds, size: '720x1280' } }),
-        signal(),
-      ),
-    ).toMatchObject({ ok: true, model: HIGH_QUALITY })
-    expect(seen[0]?.body).toEqual({
-      model: HIGH_QUALITY,
-      prompt: PROMPT,
-      seconds: seconds ?? '5',
-      size: seconds === undefined ? '1280x720' : '720x1280',
-    })
-    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
-      'POST /v1/videos',
-      `GET /v1/video/generations/${TASK}`,
-      `GET /v1/videos/${TASK}/content`,
-    ])
-    expect(spends[0]).toMatchObject({ quantity: null, cost: 0 })
-  },
-)
-
-test('新高质量全参版 30 图与 10 段 MP3 混合时按类别保序发送 JSON', async () => {
-  const images = Array.from({ length: 30 }, (_, i) => fullInput('reference', i))
-  const audios = Array.from({ length: 10 }, (_, i) => ({
-    ...fullInput('audio', i),
-    mime: 'audio/mp3',
-  }))
-  const inputs = [
-    ...images.slice(0, 15),
-    ...audios.slice(0, 5),
-    ...images.slice(15),
-    ...audios.slice(5),
-  ]
-  expect(
-    await makeMediaPort(config(HIGH_QUALITY)).generate(call({ inputs }), signal()),
-  ).toMatchObject({ ok: true })
-  expect(seen[0]?.contentType).toContain('application/json')
-  expect(seen[0]?.body).toEqual({
-    model: HIGH_QUALITY,
-    prompt: PROMPT,
-    seconds: '5',
-    size: '1280x720',
-    images: images.map((i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`),
-    audios: audios.map((i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`),
-  })
-})
-
-test.each([
-  { seconds: '3' },
-  { seconds: '31' },
-  { seconds: '4.5' },
-  { seconds: 4 },
-  { size: '1920x1080' },
-  { face: true },
-  { fps: 60 },
-  { temperature: 0.7 },
-])('新高质量全参版拒绝无效时长、尺寸与未开放字段：%j', async (params) => {
-  expect(
-    await makeMediaPort(config(HIGH_QUALITY)).generate(call({ params }), signal()),
-  ).toMatchObject({ ok: false, executed: false })
-  expect(seen).toEqual([])
-})
-
-test.each([
-  ['reference', 31],
-  ['audio', 11],
-  ['video', 1],
-  ['first_frame', 1],
-  ['last_frame', 1],
-] as const)('新高质量全参版在提交前拒绝超限或不支持的素材：%s=%i', async (role, count) => {
-  const input = fullInput(role === 'audio' ? 'audio' : role === 'video' ? 'video' : 'reference')
-  const inputs = Array.from({ length: count }, () => ({ ...input, role }))
-  expect(
-    await makeMediaPort(config(HIGH_QUALITY)).generate(call({ inputs }), signal()),
-  ).toMatchObject({ ok: false, executed: false })
-  expect(seen).toEqual([])
-})
 
 test('满血全参版混合素材分别进入 images、videos、audios 并保持各自顺序', async () => {
   const inputs = [
