@@ -2,7 +2,6 @@
  * Mumugofe 渠道：满血版于 2026-10-10 实测 /v1/videos 提交、查询、下载与视频解码。
  * 满血版按渠道模型页开放 30 图、10 视频、10 音频，复用已验证的 JSON 素材字段。
  * 006 系列按 2026-10-13 渠道目录使用 JSON；720P 为 4–15 秒，480P 为 4–30 秒。
- * sd-25-30/10/1-1 按 2026-10-13 渠道目录使用 multipart 参考图，开放 15/30 秒及 30 图、10 视频、10 音频。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -39,16 +38,6 @@ const FIXED_SECONDS: MediaParamSpec = {
   description: '固定 30 秒，使用字符串 "30"',
 }
 
-const FULL_REFERENCE_SECONDS: MediaParamSpec = {
-  name: 'seconds',
-  label: '时长',
-  type: 'enum',
-  values: ['15', '30'],
-  valueLabels: { '15': '15秒', '30': '30秒' },
-  default: '30',
-  description: '15 或 30 秒，使用字符串',
-}
-
 const SERIES_006_SECONDS: MediaParamSpec = {
   ...SECONDS,
   description: '字符串整数时长：720P 为 4–15 秒，480P 为 4–30 秒',
@@ -71,17 +60,6 @@ const SERIES_006_SIZE: MediaParamSpec = {
 }
 
 export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
-  {
-    id: 'sd-25-30/10/1-1',
-    displayName: 'Seedance 2.5 · 满参 · 720P · 15/30秒',
-    vendor: 'Mumugofe',
-    kind: 'openai_videos',
-    videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
-    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'multipart' },
-    params: [FULL_REFERENCE_SECONDS, SIZE],
-    catalogued: true,
-  },
   {
     id: '满血sd2.5(30-10-10原生过人脸/720P)',
     displayName: '满血 SD2.5 · 720P · 30秒',
