@@ -26,7 +26,7 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
         name: 'aspect_ratio',
         label: '画幅',
         type: 'string',
-        shapes: ['16:9', '9:16', '1:1'].map((ratio) => ({ ratio, tier: '720P', value: ratio })),
+        shapes: ['16:9', '9:16', '1:1'].map((ratio) => ({ ratio, value: ratio })),
         default: '16:9',
         description: '720P 横屏、竖屏或方形',
       },
