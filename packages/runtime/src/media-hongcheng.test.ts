@@ -1,11 +1,15 @@
 /** hongcheng：覆盖模型目录、运行时校验、原始素材上传、视频提交、计量与任务取回。 */
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
-import { findMediaModel, lookupMediaModel, quoteMedia } from '@qywork/ai'
+import { findMediaModel, lookupMediaModel, mediaCatalog, quoteMedia } from '@qywork/ai'
 import type { MediaSpend } from '@qywork/core'
 import type { QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 
 const MODEL = 'TTseadanco2.5-720'
+const MODELS = [
+  { id: MODEL, min: 5, defaultSeconds: '5', rate: 0.42, resolution: '720p' },
+  { id: 'TTsedanco2.5-480', min: 5, defaultSeconds: '5', rate: 0.312, resolution: '480p' },
+]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
 const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
@@ -71,45 +75,107 @@ beforeEach(() => {
   poll = { status: 'completed', seconds: '5' }
   contentStatus = 200
 })
-const config = (suffix = ''): QyConfig => ({
+const config = (suffix = '', model = MODEL): QyConfig => ({
   providers: {
     hongcheng: {
       kind: 'openai_chat_completions',
       apiKey: 'test-only-key',
       baseUrl: `http://127.0.0.1:${server.port}${suffix}`,
       models: {},
-      media: { [MODEL]: { kind: 'openai_videos' } },
+      media: { [model]: { kind: 'openai_videos' } },
     },
   },
-  mediaDefaults: { video: { provider: 'hongcheng', model: MODEL } },
+  mediaDefaults: { video: { provider: 'hongcheng', model } },
 })
 const call = () => ({
   type: 'video' as const,
-  prompt: '@图片1 @视频1 @音频1',
+  prompt: '@Image1 @Video1 @Audio1',
   inputs: [],
   params: {},
 })
 const signal = () => new AbortController().signal
 
-test('纵横模型登记独立能力和价格，其他协议不继承渠道规格', () => {
-  expect(findMediaModel(MODEL)).toMatchObject({
+test('hongcheng 目录仅保留 TT 系列，移除失效型号规格', () => {
+  expect(
+    mediaCatalog()
+      .filter((model) => model.vendor === 'hongcheng')
+      .map((model) => model.id),
+  ).toEqual(MODELS.map((model) => model.id))
+  for (const id of ['seedance-2.5（YX）', 'seedance2.5-yx-count', 'wf-sd2.5-v2']) {
+    expect(findMediaModel(id)).toBeUndefined()
+    expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
+  }
+})
+
+test.each(MODELS)('型号不接受其他分辨率，拒绝发生在上传之前：$id', async ({ id, resolution }) => {
+  const result = await makeMediaPort(config('', id)).generate(
+    { ...call(), inputs, params: { resolution: resolution === '720p' ? '480p' : '720p' } },
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: false, executed: false })
+  expect(seen).toEqual([])
+})
+
+test.each(MODELS)('渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id', ({ id }) => {
+  expect(findMediaModel(id)).toMatchObject({
+    displayName: id,
     vendor: 'hongcheng',
     videoFormat: 'hongcheng',
     inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10 },
-    mention: { image: '@图片{n}', video: '@视频{n}', audio: '@音频{n}' },
+    mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
   })
-  expect(lookupMediaModel(MODEL, 'ark_videos').catalogued).toBe(false)
+  expect(lookupMediaModel(id, 'ark_videos').catalogued).toBe(false)
 })
 
-test('生成前按所选时长和每秒 0.42 元报价，省略时长时使用默认 5 秒', () => {
-  const spec = findMediaModel(MODEL)!
-  for (const [params, cost] of [
-    [{}, 2.1],
-    [{ seconds: '10' }, 4.2],
-    [{ seconds: '30' }, 12.6],
-  ] as const) {
-    expect(quoteMedia(spec, params, { images: 1, videos: 0 })).toEqual({ cost, currency: 'CNY' })
+test.each(MODELS)(
+  '报价按渠道计费单位计算，省略时长使用模型默认值：$id',
+  ({ id, min, defaultSeconds, rate }) => {
+    const spec = findMediaModel(id)!
+    for (const seconds of [undefined, String(min), '10', '30']) {
+      const quote = quoteMedia(spec, seconds ? { seconds } : {}, { images: 1, videos: 0 })
+      expect(quote?.currency).toBe('CNY')
+      expect(quote?.cost).toBeCloseTo(Number(seconds ?? defaultSeconds) * rate, 10)
+    }
+  },
+)
+
+test.each(MODELS)(
+  '默认参数提交准确模型 ID 与分辨率，按响应秒数记账：$id',
+  async ({ id, defaultSeconds, rate, resolution }) => {
+    const spends: MediaSpend[] = []
+    const result = await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
+      call(),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4, mime: 'video/mp4' }] })
+    expect(seen[0]?.body).toEqual({
+      model: id,
+      prompt: call().prompt,
+      seconds: defaultSeconds,
+      resolution,
+      aspect_ratio: '16:9',
+      ratio: '16:9',
+    })
+    expect(spends[0]).toMatchObject({ quantity: 5, currency: 'CNY' })
+    expect(spends[0]?.cost).toBeCloseTo(5 * rate, 10)
+  },
+)
+
+test.each(MODELS)('时长下限可提交，低于下限或超过上限时不上传：$id', async ({ id, min }) => {
+  const port = makeMediaPort(config('', id))
+  for (const seconds of [String(min - 1), '31']) {
+    expect(await port.generate({ ...call(), inputs, params: { seconds } }, signal())).toMatchObject(
+      {
+        ok: false,
+        executed: false,
+      },
+    )
   }
+  expect(seen).toEqual([])
+  expect((await port.generate({ ...call(), params: { seconds: String(min) } }, signal())).ok).toBe(
+    true,
+  )
+  expect(seen[0]?.body?.seconds).toBe(String(min))
 })
 
 test.each(['', '/v1'])('默认参数提交并按接口回报秒数计量，地址后缀=%s', async (suffix) => {
@@ -131,40 +197,43 @@ test.each(['', '/v1'])('默认参数提交并按接口回报秒数计量，地�
   expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
 })
 
-test('三类素材按原始 MIME 和字节上传，URL 按同类顺序提交', async () => {
-  const references = [inputs[0]!, inputs[1]!, inputs[0]!, inputs[2]!]
-  const tasks: unknown[] = []
-  const result = await makeMediaPort(config('/v1')).generate(
-    {
-      ...call(),
-      inputs: references,
-      params: { seconds: '30', aspect_ratio: '9:16' },
-      onSubmit: () =>
-        expect(seen.map((entry) => entry.path)).toEqual(Array(4).fill('/refhost/upload')),
-      onTask: (task) => {
-        tasks.push(task)
+test.each(MODELS)(
+  '三类素材按原始 MIME 和字节上传，URL 按同类顺序提交：$id',
+  async ({ id, resolution }) => {
+    const references = [inputs[0]!, inputs[1]!, inputs[0]!, inputs[2]!]
+    const tasks: unknown[] = []
+    const result = await makeMediaPort(config('/v1', id)).generate(
+      {
+        ...call(),
+        inputs: references,
+        params: { seconds: '30', aspect_ratio: '9:16' },
+        onSubmit: () =>
+          expect(seen.map((entry) => entry.path)).toEqual(Array(4).fill('/refhost/upload')),
+        onTask: (task) => {
+          tasks.push(task)
+        },
       },
-    },
-    signal(),
-  )
-  expect(result.ok).toBe(true)
-  expect(seen.slice(0, 4).map((entry) => ({ bytes: entry.bytes, mime: entry.mime }))).toEqual(
-    references.map((input) => ({ bytes: input.bytes, mime: input.mime })),
-  )
-  expect(seen.slice(0, 4).every((entry) => entry.xhr === 'XMLHttpRequest')).toBe(true)
-  expect(seen[4]?.body).toEqual({
-    model: MODEL,
-    prompt: call().prompt,
-    seconds: '30',
-    resolution: '720p',
-    aspect_ratio: '9:16',
-    ratio: '9:16',
-    reference_images: ['https://assets.example/1', 'https://assets.example/3'],
-    reference_videos: ['https://assets.example/2'],
-    reference_audios: ['https://assets.example/4'],
-  })
-  expect(tasks).toEqual([{ provider: 'hongcheng', model: MODEL, taskId: 'task_hongcheng' }])
-})
+      signal(),
+    )
+    expect(result.ok).toBe(true)
+    expect(seen.slice(0, 4).map((entry) => ({ bytes: entry.bytes, mime: entry.mime }))).toEqual(
+      references.map((input) => ({ bytes: input.bytes, mime: input.mime })),
+    )
+    expect(seen.slice(0, 4).every((entry) => entry.xhr === 'XMLHttpRequest')).toBe(true)
+    expect(seen[4]?.body).toEqual({
+      model: id,
+      prompt: call().prompt,
+      seconds: '30',
+      resolution,
+      aspect_ratio: '9:16',
+      ratio: '9:16',
+      reference_images: ['https://assets.example/1', 'https://assets.example/3'],
+      reference_videos: ['https://assets.example/2'],
+      reference_audios: ['https://assets.example/4'],
+    })
+    expect(tasks).toEqual([{ provider: 'hongcheng', model: id, taskId: 'task_hongcheng' }])
+  },
+)
 
 test.each([
   { seconds: 5 },
@@ -219,12 +288,12 @@ test('上传鉴权失败明确未提交，允许随后重新尝试', async () =>
   expect((await port.generate({ ...call(), inputs }, signal())).ok).toBe(true)
 })
 
-test('任务取回不重复上传或提交，缺失秒数不以请求时长计费', async () => {
+test.each(MODELS)('任务取回不重复上传或提交，缺失秒数时不推算费用：$id', async ({ id }) => {
   poll = { status: 'completed' }
   const spends: MediaSpend[] = []
   expect(
     (
-      await makeMediaPort(config(), (spend) => spends.push(spend)).generate(
+      await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
         { ...call(), inputs, resumeTaskId: 'task_hongcheng' },
         signal(),
       )

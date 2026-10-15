@@ -1,7 +1,6 @@
 /**
- * Mumugofe 渠道：满血版于 2026-10-10 实测 /v1/videos 提交、查询、下载与视频解码。
- * 满血版按渠道模型页开放 30 图、10 视频、10 音频，复用已验证的 JSON 素材字段。
- * 006 系列按 2026-10-13 渠道目录使用 JSON；720P 为 4–15 秒，480P 为 4–30 秒。
+ * Mumugofe 渠道使用 /v1/videos 提交，素材通过 JSON 字段传递。
+ * 006 系列按型号固定清晰度：720P 为 4–15 秒，480P 为 5–30 秒，均按条计费。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'
@@ -38,50 +37,56 @@ const FIXED_SECONDS: MediaParamSpec = {
   description: '固定 30 秒，使用字符串 "30"',
 }
 
-const SERIES_006_SECONDS: MediaParamSpec = {
-  ...SECONDS,
-  description: '字符串整数时长：720P 为 4–15 秒，480P 为 4–30 秒',
-  rules: [
-    {
-      when: { params: { size: ['1280x720', '720x1280'] } },
-      values: Array.from({ length: 12 }, (_, i) => String(i + 4)),
-    },
-  ],
-}
-
-const SERIES_006_SIZE: MediaParamSpec = {
-  ...SIZE,
-  shapes: [
-    ...SIZE.shapes!,
-    { ratio: '16:9', tier: '480P', value: '854x480' },
-    { ratio: '9:16', tier: '480P', value: '480x854' },
-  ],
-  description: '720P：1280x720 或 720x1280；480P：854x480 或 480x854',
-}
-
 export const MUMUGOFE_MODELS: readonly MediaModelSpec[] = [
-  {
-    id: '满血sd2.5(30-10-10原生过人脸/720P)',
-    displayName: '满血 SD2.5 · 720P · 30秒',
-    vendor: 'Mumugofe',
-    kind: 'openai_videos',
-    videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
-    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
-    params: [FIXED_SECONDS, SIZE],
-    catalogued: true,
-  },
-  {
-    id: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)',
-    displayName: '006 系列 SD2.5 · 满参 · 720P/480P',
-    vendor: 'Mumugofe',
-    kind: 'openai_videos',
-    videoFormat: 'mumugofe',
-    operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
-    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
-    params: [SERIES_006_SECONDS, SERIES_006_SIZE],
-    catalogued: true,
-  },
+  ...[
+    {
+      id: '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)',
+      min: 4,
+      max: 15,
+      tier: '720P',
+      width: 1280,
+      height: 720,
+    },
+    {
+      id: '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)',
+      min: 5,
+      max: 30,
+      tier: '480P',
+      width: 854,
+      height: 480,
+    },
+  ].map(
+    ({ id, min, max, tier, width, height }): MediaModelSpec => ({
+      id,
+      displayName: id,
+      vendor: 'Mumugofe',
+      kind: 'openai_videos',
+      videoFormat: 'mumugofe',
+      operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+      inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
+      params: [
+        {
+          ...SECONDS,
+          values: Array.from({ length: max - min + 1 }, (_, i) => String(i + min)),
+          valueLabels: Object.fromEntries(
+            Array.from({ length: max - min + 1 }, (_, i) => [i + min, `${i + min}秒`]),
+          ),
+          description: `${min}–${max} 秒整数，使用字符串`,
+        },
+        {
+          ...SIZE,
+          shapes: [
+            { ratio: '16:9', tier, value: `${width}x${height}` },
+            { ratio: '9:16', tier, value: `${height}x${width}` },
+          ],
+          default: `${width}x${height}`,
+          description: `${tier} 横屏 ${width}x${height} 或竖屏 ${height}x${width}`,
+        },
+      ],
+      price: { currency: 'CNY', cost: () => 7.5, usageOf: () => ({}) },
+      catalogued: true,
+    }),
+  ),
 ]
 
 /** 已从内置模型库下架；旧配置和已提交任务仍按原协议解析，避免取回改走通用端点。 */
