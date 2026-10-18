@@ -2,7 +2,45 @@
 import { mediaParamValues } from '@qywork/core'
 import type { MediaModelSpec } from '../catalog.ts'
 import { sendJson } from '../http.ts'
-import { MediaError, type MediaRequest } from '../types.ts'
+import { MediaError, type MediaInput, type MediaRequest } from '../types.ts'
+
+/** 上传单个素材并校验回执；生成请求仅使用返回的公网地址。 */
+export async function uploadHongchengReference(
+  input: MediaInput,
+  base: string,
+  auth: Record<string, string>,
+  signal: AbortSignal,
+): Promise<string> {
+  const endpoint = new URL('/refhost/upload', base).href
+  let uploaded = ''
+  await sendJson(
+    endpoint,
+    {
+      method: 'POST',
+      headers: { ...auth, 'content-type': input.mime, 'x-requested-with': 'XMLHttpRequest' },
+      body: new Blob([input.bytes]),
+    },
+    signal,
+    {
+      stage: 'upload',
+      validate(body) {
+        const value = body.url ?? body.ref_url
+        if (typeof value !== 'string' || !value.trim()) return '上传接口未返回素材地址'
+        if (!value.startsWith('https://') && !/^\/(?!\/)/.test(value))
+          return '上传接口未返回有效的 HTTPS 素材地址'
+        try {
+          const url = new URL(value, endpoint)
+          if (url.protocol !== 'https:' || url.username || url.password)
+            return '上传接口未返回有效的 HTTPS 素材地址'
+          uploaded = url.href
+        } catch {
+          return '上传接口未返回有效的 HTTPS 素材地址'
+        }
+      },
+    },
+  )
+  return uploaded
+}
 
 export async function hongchengVideoPayload(
   req: MediaRequest,
@@ -22,34 +60,7 @@ export async function hongchengVideoPayload(
   }
   for (const input of req.inputs) {
     const field = fields[input.role as keyof typeof fields]
-    const endpoint = new URL('/refhost/upload', base).href
-    let uploaded = ''
-    await sendJson(
-      endpoint,
-      {
-        method: 'POST',
-        headers: { ...auth, 'content-type': input.mime, 'x-requested-with': 'XMLHttpRequest' },
-        body: new Blob([input.bytes]),
-      },
-      signal,
-      {
-        stage: 'upload',
-        validate(body) {
-          const value = body.url ?? body.ref_url
-          if (typeof value !== 'string' || !value.trim()) return '上传接口未返回素材地址'
-          if (!value.startsWith('https://') && !/^\/(?!\/)/.test(value))
-            return '上传接口未返回有效的 HTTPS 素材地址'
-          try {
-            const url = new URL(value, endpoint)
-            if (url.protocol !== 'https:' || url.username || url.password)
-              return '上传接口未返回有效的 HTTPS 素材地址'
-            uploaded = url.href
-          } catch {
-            return '上传接口未返回有效的 HTTPS 素材地址'
-          }
-        },
-      },
-    )
+    const uploaded = await uploadHongchengReference(input, base, auth, signal)
     references[field] ??= []
     references[field].push(uploaded)
   }

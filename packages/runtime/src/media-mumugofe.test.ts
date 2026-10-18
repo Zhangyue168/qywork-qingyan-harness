@@ -8,12 +8,7 @@ import {
   mediaKindsOf,
   quoteMedia,
 } from '@qywork/ai'
-import {
-  type MediaInputRole,
-  type MediaSpend,
-  mediaParamValues,
-  resolveMediaParam,
-} from '@qywork/core'
+import type { MediaInputRole, MediaSpend } from '@qywork/core'
 import { listMediaModels, type QyConfig } from './config.ts'
 import { makeMediaPort } from './media.ts'
 import { buildTailNotes } from './prompt.ts'
@@ -23,10 +18,7 @@ const REMOVED_VIDEO_30S = 'video-sd25-30s'
 const REMOVED_006 = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒/480P30秒)'
 const SERIES_006_720 = '006系列/sd2.5(满血30-10-10原生过人脸720P15秒)'
 const SERIES_006_480 = '006系列/sd2.5(满血30-10-10原生过人脸/5-30秒/480P)'
-const SERIES_006 = [
-  { id: SERIES_006_720, min: 4, max: 15, landscape: '1280x720', portrait: '720x1280' },
-  { id: SERIES_006_480, min: 5, max: 30, landscape: '854x480', portrait: '480x854' },
-]
+const MODEL = 'seedance2.5-V'
 const HIGH_QUALITY = '高质量sd2.5/(全参原生过真人速度快720P)'
 const REMOVED_UPSCALED = '全能sd2.5(满血内置过脸30图超分1080P)'
 const REMOVED_FULL_REFERENCE = 'sd-25-30/10/1-1'
@@ -45,6 +37,7 @@ interface Seen {
   path: string
   auth: string | null
   contentType: string | null
+  uploadHeader: string | null
   body?: unknown
 }
 let server: ReturnType<typeof Bun.serve>
@@ -52,6 +45,7 @@ let seen: Seen[]
 let status: 'completed' | 'failed'
 let contentStatus: number
 let taskStatuses: string[]
+let resultUrl: unknown
 
 beforeAll(() => {
   server = Bun.serve({
@@ -64,6 +58,7 @@ beforeAll(() => {
         path,
         auth: req.headers.get('authorization'),
         contentType: req.headers.get('content-type'),
+        uploadHeader: req.headers.get('x-upload-secret'),
         ...(req.method === 'POST' ? { body: await req.json() } : {}),
       })
       if (req.method === 'POST' && path === '/v1/videos')
@@ -72,7 +67,7 @@ beforeAll(() => {
         return Response.json({
           id: TASK,
           object: 'video',
-          model: SERIES_006_720,
+          model: MODEL,
           status,
           ...(status === 'failed'
             ? {
@@ -93,9 +88,11 @@ beforeAll(() => {
             status: taskStatuses.shift() ?? (status === 'completed' ? 'SUCCESS' : 'FAILURE'),
             fail_reason: status === 'failed' ? REJECTED : '',
             progress: '100%',
+            result_url: `http://127.0.0.1:${server.port}/v1/videos/${TASK}/content`,
+            data: { download_url: resultUrl },
           },
         })
-      if (req.method === 'GET' && path === `/v1/videos/${TASK}/content`)
+      if (req.method === 'GET' && path === `/generated/${TASK}.mp4`)
         return new Response(contentStatus === 200 ? MP4 : 'forbidden', {
           status: contentStatus,
           headers: { 'content-type': 'video/mp4' },
@@ -110,9 +107,10 @@ beforeEach(() => {
   status = 'completed'
   contentStatus = 200
   taskStatuses = []
+  resultUrl = `http://127.0.0.1:${server.port}/generated/${TASK}.mp4`
 })
 
-const config = (model = SERIES_006_720): QyConfig => ({
+const config = (model = MODEL): QyConfig => ({
   providers: {
     mumugofe: {
       kind: 'openai_chat_completions',
@@ -134,16 +132,17 @@ const call = (over: Partial<MediaCall> = {}): MediaCall => ({
 const signal = () => new AbortController().signal
 
 test('渠道型号在模型库和 Agent 参数表中使用自己的协议与能力', () => {
-  const spec = findMediaModel(SERIES_006_720)!
+  const spec = findMediaModel(MODEL)!
   expect(spec.vendor).toBe('Mumugofe')
   expect(spec.catalogued).toBe(true)
   expect(mediaKindsOf(spec)).toEqual(['openai_videos'])
-  expect(spec.operations).toEqual(['text_to_video', 'reference_to_video', 'video_to_video'])
+  expect(spec.operations).toEqual(['text_to_video', 'reference_to_video'])
   expect(spec.inputs.maxImages).toBe(30)
-  expect(spec.inputs.maxVideos).toBe(10)
-  expect(spec.inputs.maxAudios).toBe(10)
+  expect(spec.inputs.publicUrls).toBe(true)
+  expect(spec.inputs.maxVideos).toBe(0)
+  expect(spec.inputs.maxAudios).toBe(0)
   expect(quoteMedia(spec, {}, { images: 0, videos: 0 })).toEqual({ cost: 7.5, currency: 'CNY' })
-  expect(lookupMediaModel(SERIES_006_720, 'ark_videos').catalogued).toBe(false)
+  expect(lookupMediaModel(MODEL, 'ark_videos').catalogued).toBe(false)
   const text = buildTailNotes({
     workspaceRoot: '/w',
     platform: 'win32',
@@ -152,12 +151,12 @@ test('渠道型号在模型库和 Agent 参数表中使用自己的协议与能�
   })
     .map((n) => n.content)
     .join('\n')
-  expect(text).toContain(SERIES_006_720)
-  expect(text).toContain('4–15 秒整数，使用字符串')
+  expect(text).toContain(MODEL)
+  expect(text).toContain('5–30 秒整数，使用字符串')
   expect(text).toContain('1280x720')
   expect(text).toContain('720x1280')
-  expect(text).toContain('参考视频最多 10 个')
-  expect(text).toContain('参考音频最多 10 段')
+  expect(text).not.toContain('参考视频最多')
+  expect(text).not.toContain('参考音频最多')
   expect(text).not.toContain('temperature')
   expect(text).not.toContain('generate_audio')
 })
@@ -181,19 +180,19 @@ test.each([{}, { seconds: '5', size: '1280x720' }])(
     expect(result).toMatchObject({
       ok: true,
       provider: 'mumugofe',
-      model: SERIES_006_720,
+      model: MODEL,
       files: [{ bytes: MP4, mime: 'video/mp4' }],
     })
-    expect(tasks).toEqual([{ taskId: TASK, provider: 'mumugofe', model: SERIES_006_720 }])
+    expect(tasks).toEqual([{ taskId: TASK, provider: 'mumugofe', model: MODEL }])
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       'POST /v1/videos',
       `GET /v1/video/generations/${TASK}`,
-      `GET /v1/videos/${TASK}/content`,
+      `GET /generated/${TASK}.mp4`,
     ])
     expect(seen.every((s) => s.auth === 'Bearer test-only-key')).toBe(true)
     expect(seen[0]?.contentType).toContain('application/json')
     expect(seen[0]?.body).toEqual({
-      model: SERIES_006_720,
+      model: MODEL,
       prompt: PROMPT,
       seconds: '5',
       size: '1280x720',
@@ -203,44 +202,11 @@ test.each([{}, { seconds: '5', size: '1280x720' }])(
   },
 )
 
-test.each([1, 30])('参考图原样按顺序进入 images，支持竖屏，张数=%i', async (count) => {
-  const inputs = Array.from({ length: count }, (_, i) => ({
-    role: 'reference' as const,
-    bytes: new Uint8Array([...PNG, i]),
-    mime: 'image/png',
-    path: `/reference-${i}.png`,
-  }))
-  expect(
-    await makeMediaPort(config()).generate(
-      call({ inputs, params: { size: '720x1280' } }),
-      signal(),
-    ),
-  ).toMatchObject({ ok: true })
-  expect(seen[0]?.body).toEqual({
-    model: SERIES_006_720,
-    prompt: PROMPT,
-    seconds: '5',
-    size: '720x1280',
-    images: inputs.map((i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`),
-  })
-})
-
-test('超过渠道声明的 30 张参考图时在提交前拒绝', async () => {
-  const inputs = Array.from({ length: 31 }, () => ({
-    role: 'reference' as const,
-    bytes: PNG,
-    mime: 'image/png',
-    path: '/reference.png',
-  }))
-  expect(await makeMediaPort(config()).generate(call({ inputs }), signal())).toMatchObject({
-    ok: false,
-    executed: false,
-  })
-  expect(seen).toEqual([])
-})
-
 test.each([
-  { seconds: '16' },
+  { seconds: '4' },
+  { seconds: '31' },
+  { seconds: '5.5' },
+  { size: '854x480' },
   { seconds: 30 },
   { size: '1920x1080' },
   { temperature: 0.7 },
@@ -254,7 +220,7 @@ test.each([
   expect(seen).toEqual([])
 })
 
-test.each<MediaInputRole>(['first_frame', 'last_frame'])(
+test.each<MediaInputRole>(['video', 'audio', 'first_frame', 'last_frame'])(
   '未完成适配的素材不能被静默丢弃：%s',
   async (role) => {
     const result = await makeMediaPort(config()).generate(
@@ -265,6 +231,138 @@ test.each<MediaInputRole>(['first_frame', 'last_frame'])(
     expect(seen).toEqual([])
   },
 )
+
+test('参考图经指定上传接口后向 mumu 提交公网地址，凭证和输入顺序保持独立', async () => {
+  const uploads: { bytes: Uint8Array; auth: string | null; type: string | null }[] = []
+  const host = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    async fetch(req) {
+      expect(new URL(req.url).pathname).toBe('/refhost/upload')
+      expect(req.headers.get('x-mumu-secret')).toBeNull()
+      expect(req.headers.get('x-upload-secret')).toBe('upload-header')
+      uploads.push({
+        bytes: new Uint8Array(await req.arrayBuffer()),
+        auth: req.headers.get('authorization'),
+        type: req.headers.get('content-type'),
+      })
+      return Response.json({ url: `https://assets.test/${uploads.length}.png` })
+    },
+  })
+  try {
+    const cfg = config()
+    cfg.providers.mumugofe!.headers = { 'x-mumu-secret': 'mumu-header' }
+    cfg.providers.mumugofe!.media![MODEL]!.hongchengUploadProvider = 'reference-host'
+    cfg.providers['reference-host'] = {
+      kind: 'openai_chat_completions',
+      apiKey: 'upload-only-key',
+      baseUrl: `http://127.0.0.1:${host.port}/v1`,
+      headers: { 'x-upload-secret': 'upload-header' },
+      models: {},
+    }
+    const inputs = [PNG, new Uint8Array([...PNG, 2])].map((bytes, i) => ({
+      role: 'reference' as const,
+      bytes,
+      mime: 'image/png',
+      path: `/reference-${i}.png`,
+    }))
+    const result = await makeMediaPort(cfg).generate(
+      call({
+        inputs,
+        params: { seconds: '30' },
+        onSubmit: () => {
+          expect(uploads).toHaveLength(2)
+          expect(seen).toEqual([])
+        },
+      }),
+      signal(),
+    )
+    expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
+    expect(uploads).toEqual(
+      inputs.map((input) => ({
+        bytes: input.bytes,
+        auth: 'Bearer upload-only-key',
+        type: input.mime,
+      })),
+    )
+    expect(seen[0]?.body).toEqual({
+      model: MODEL,
+      prompt: PROMPT,
+      seconds: '30',
+      size: '1280x720',
+      images: ['https://assets.test/1.png', 'https://assets.test/2.png'],
+    })
+    expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
+    expect(seen.every((entry) => entry.uploadHeader === null)).toBe(true)
+  } finally {
+    host.stop(true)
+  }
+})
+
+test.each([403, 'http://assets.test/ref.png', 'https://user:secret@assets.test/ref.png', ''])(
+  '上传失败或地址无效时不提交生成：%s',
+  async (response) => {
+    const host = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        typeof response === 'number'
+          ? new Response('upload rejected', { status: response })
+          : Response.json({ url: response }),
+    })
+    try {
+      const cfg = config()
+      cfg.providers.mumugofe!.media![MODEL]!.hongchengUploadProvider = 'host'
+      cfg.providers.host = {
+        kind: 'openai_chat_completions',
+        models: {},
+        apiKey: 'upload-only-key',
+        baseUrl: `http://127.0.0.1:${host.port}/v1`,
+      }
+      const result = await makeMediaPort(cfg).generate(
+        call({ inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/ref.png' }] }),
+        signal(),
+      )
+      expect(result).toMatchObject({ ok: false, diagnostic: { stage: 'upload' } })
+      expect(result).not.toHaveProperty('pendingTaskId')
+      expect(seen).toEqual([])
+    } finally {
+      host.stop(true)
+    }
+  },
+)
+
+test('缺少上传配置时拒绝参考图，已有任务恢复仍可查询下载', async () => {
+  const inputs = [{ role: 'reference' as const, bytes: PNG, mime: 'image/png', path: '/ref.png' }]
+  const port = makeMediaPort(config())
+  expect(await port.generate(call({ inputs }), signal())).toMatchObject({
+    ok: false,
+    executed: false,
+    message: expect.stringContaining('hongchengUploadProvider'),
+  })
+  expect(seen).toEqual([])
+  expect(await port.generate(call({ inputs, resumeTaskId: TASK }), signal())).toMatchObject({
+    ok: true,
+  })
+  expect(seen.every((entry) => entry.method === 'GET')).toBe(true)
+})
+
+test('参考图超过三十张时在上传前拒绝', async () => {
+  const result = await makeMediaPort(config()).generate(
+    call({
+      inputs: Array.from({ length: 31 }, () => ({
+        role: 'reference' as const,
+        bytes: PNG,
+        mime: 'image/png',
+        path: '/ref.png',
+      })),
+    }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: false, executed: false })
+  if (!result.ok) expect(result.message).not.toContain('hongchengUploadProvider')
+  expect(seen).toEqual([])
+})
 
 test('下载失败保留任务号，恢复只查询下载，不重复提交', async () => {
   contentStatus = 403
@@ -278,8 +376,48 @@ test('下载失败保留任务号，恢复只查询下载，不重复提交', as
   expect(await port.generate(call({ resumeTaskId: TASK }), signal())).toMatchObject({ ok: true })
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     `GET /v1/video/generations/${TASK}`,
-    `GET /v1/videos/${TASK}/content`,
+    `GET /generated/${TASK}.mp4`,
   ])
+})
+
+test('成片直链跨源下载不携带接口凭证，恢复不经过内容转发端点', async () => {
+  let headers: Headers | undefined
+  const asset = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(req) {
+      headers = req.headers
+      return new Response(MP4, { headers: { 'content-type': 'video/mp4' } })
+    },
+  })
+  try {
+    resultUrl = `http://127.0.0.1:${asset.port}/result.mp4`
+    const cfg = config()
+    cfg.providers.mumugofe!.headers = { 'x-provider-key': 'private-header' }
+    const result = await makeMediaPort(cfg).generate(call({ resumeTaskId: TASK }), signal())
+    expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4, mime: 'video/mp4' }] })
+    expect(headers?.get('authorization')).toBeNull()
+    expect(headers?.get('x-provider-key')).toBeNull()
+    expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([`GET /v1/video/generations/${TASK}`])
+    expect(seen[0]?.auth).toBe('Bearer test-only-key')
+  } finally {
+    asset.stop(true)
+  }
+})
+
+test.each([
+  undefined,
+  '',
+  'invalid-url',
+  'file:///result.mp4',
+  'https://user:secret@media.test/v.mp4',
+])('成功回执缺少有效成片直链时保留任务，不重新提交：%s', async (url) => {
+  resultUrl = url
+  const result = await makeMediaPort(config()).generate(call({ resumeTaskId: TASK }), signal())
+  expect(result).toMatchObject({ ok: false, pendingTaskId: TASK })
+  if (result.ok) throw new Error('expected failure')
+  expect(result.message).toContain('任务成功但未返回有效成片地址')
+  expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([`GET /v1/video/generations/${TASK}`])
 })
 
 test('远端明确失败时返回任务接口中的拒绝原因，不下载或重新生成', async () => {
@@ -315,7 +453,7 @@ test('下架专享版保留旧配置的时长与音频规格', () => {
     .join('\n')
   expect(text).toContain('参考音频最多 10 段')
   expect(text).toContain('4–30 秒整数，使用字符串')
-  expect(findMediaModel(SERIES_006_720)!.inputs.maxAudios).toBe(10)
+  expect(findMediaModel(MODEL)!.inputs.maxAudios).toBe(0)
 })
 
 test.each([undefined, '4', '17', '30'])(
@@ -510,7 +648,11 @@ test('模型库收录当前型号，下架型号保留旧任务取回规格', ()
     mediaCatalog()
       .filter((m) => m.vendor === 'Mumugofe')
       .map((m) => m.id),
-  ).toEqual([SERIES_006_720, SERIES_006_480])
+  ).toEqual([MODEL])
+  for (const id of [SERIES_006_720, SERIES_006_480]) {
+    expect(findMediaModel(id)).toBeUndefined()
+    expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
+  }
   expect(findMediaModel(REMOVED_FULL)).toBeUndefined()
   expect(lookupMediaModel(REMOVED_FULL, 'openai_videos').videoFormat).toBeUndefined()
   expect(findMediaModel(REMOVED_006)).toBeUndefined()
@@ -531,7 +673,7 @@ test('模型库收录当前型号，下架型号保留旧任务取回规格', ()
   }
 })
 
-test.each([EXCLUSIVE, FULL_PARAMS, SERIES_006_720, SERIES_006_480])(
+test.each([EXCLUSIVE, FULL_PARAMS, MODEL])(
   '当前与下架型号取回仅查询下载原任务：%s',
   async (model) => {
     expect(
@@ -539,229 +681,33 @@ test.each([EXCLUSIVE, FULL_PARAMS, SERIES_006_720, SERIES_006_480])(
     ).toMatchObject({ ok: true, model })
     expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
       `GET /v1/video/generations/${TASK}`,
-      `GET /v1/videos/${TASK}/content`,
+      `GET /generated/${TASK}.mp4`,
     ])
   },
 )
 
-test('006 系列混合图、视频、音频按类别保序提交 JSON，素材不丢失', async () => {
-  const inputs = [
-    fullInput('video', 1),
-    fullInput('audio', 1),
-    fullInput('reference', 1),
-    fullInput('video', 2),
-    fullInput('reference', 2),
-    fullInput('audio', 2),
-  ]
-  expect(await makeMediaPort(config()).generate(call({ inputs }), signal())).toMatchObject({
-    ok: true,
-  })
-  const field = (role: string) =>
-    inputs
-      .filter((i) => i.role === role)
-      .map((i) => `data:${i.mime};base64,${Buffer.from(i.bytes).toString('base64')}`)
-  expect(seen[0]?.contentType).toContain('application/json')
-  expect(seen[0]?.body).toEqual({
-    model: SERIES_006_720,
-    prompt: PROMPT,
-    seconds: '5',
-    size: '1280x720',
-    images: field('reference'),
-    videos: field('video'),
-    audios: field('audio'),
-  })
-})
-
-test.each([
-  [30, 10, 10, true],
-  [31, 10, 10, false],
-  [30, 11, 10, false],
-  [30, 10, 11, false],
-] as const)('006 系列参考素材边界：%i 图、%i 视频、%i 音频', async (images, videos, audios, ok) => {
-  const inputs = [
-    ...Array.from({ length: images }, (_, i) => fullInput('reference', i)),
-    ...Array.from({ length: videos }, (_, i) => fullInput('video', i)),
-    ...Array.from({ length: audios }, (_, i) => fullInput('audio', i)),
-  ]
-  expect(await makeMediaPort(config()).generate(call({ inputs }), signal())).toMatchObject(
-    ok ? { ok: true } : { ok: false, executed: false },
+test.each(['5', '16', '30'])('seedance2.5-V 时长逐秒选择且按次报价：%s', async (seconds) => {
+  const spec = findMediaModel(MODEL)!
+  expect(spec.params.find((p) => p.name === 'seconds')?.values).toEqual(
+    Array.from({ length: 26 }, (_, i) => String(i + 5)),
   )
-  expect(seen.some((s) => s.method === 'POST')).toBe(ok)
-})
-
-test.each(SERIES_006)(
-  '006 系列按独立型号下发固定尺寸、时长和按条报价：$id',
-  ({ id, min, max, landscape, portrait }) => {
-    const spec = findMediaModel(id)!
-    expect(spec).toMatchObject({
-      displayName: id,
-      inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10, transport: 'json' },
-      operations: ['text_to_video', 'reference_to_video', 'video_to_video'],
+  for (const size of ['1280x720', '720x1280']) {
+    expect(quoteMedia(spec, { seconds, size }, { images: 0, videos: 0 })).toEqual({
+      cost: 7.5,
+      currency: 'CNY',
     })
-    const text = buildTailNotes({
-      workspaceRoot: '/w',
-      platform: 'win32',
-      mode: 'auto',
-      mediaModels: listMediaModels(config(id)),
-    })
-      .map((n) => n.content)
-      .join('\n')
-    expect(text).toContain(`${min}–${max} 秒整数，使用字符串`)
-    expect(text).toContain('参考图最多 30 张')
-    expect(text).toContain('参考视频最多 10 个')
-    expect(text).toContain('参考音频最多 10 段')
-    const seconds = spec.params.find((p) => p.name === 'seconds')!
-    expect(spec.params.find((p) => p.name === 'size')?.shapes?.map((shape) => shape.value)).toEqual(
-      [landscape, portrait],
-    )
-    for (const size of [landscape, portrait]) {
-      const resolved = resolveMediaParam(
-        seconds,
-        'text_to_video',
-        mediaParamValues(spec.params, { size }),
-      )
-      expect(resolved.values).toEqual(
-        Array.from({ length: max - min + 1 }, (_, i) => String(i + min)),
-      )
-      for (const seconds of [String(min), String(max)]) {
-        expect(quoteMedia(spec, { size, seconds }, { images: 30, videos: 10 })).toEqual({
-          cost: 7.5,
-          currency: 'CNY',
-        })
-      }
-    }
-  },
-)
-
-test.each(
-  SERIES_006.flatMap((model) =>
-    [
-      {},
-      { seconds: String(model.min) },
-      { seconds: String(model.max), size: model.landscape },
-      { seconds: String(model.max), size: model.portrait },
-    ].map((params) => ({ ...model, params })),
-  ),
-)('006 系列发送独立 ID、字符串时长和固定清晰度尺寸：%j', async ({ id, landscape, params }) => {
-  const spends: MediaSpend[] = []
-  expect(
-    await makeMediaPort(config(id), (spend) => spends.push(spend)).generate(
-      call({ params }),
-      signal(),
-    ),
-  ).toMatchObject({ ok: true, model: id })
-  expect(seen[0]?.contentType).toContain('application/json')
-  expect(seen[0]?.body).toEqual({
-    model: id,
-    prompt: PROMPT,
-    seconds: params.seconds ?? '5',
-    size: params.size ?? landscape,
-  })
-  expect(spends).toMatchObject([{ model: id, quantity: null, cost: 7.5, currency: 'CNY' }])
-})
-
-test.each(
-  SERIES_006.flatMap((model) =>
-    [
-      { seconds: String(model.min - 1) },
-      { seconds: String(model.max + 1) },
-      { seconds: '4.5' },
-      { seconds: 15 },
-      { size: model.id === SERIES_006_720 ? '854x480' : '1280x720' },
-      { size: '1920x1080' },
-      { temperature: 0.7 },
-    ].map((params) => ({ ...model, params })),
-  ),
-)('006 系列拒绝错误清晰度、越界时长和未开放参数：%j', async ({ id, params }) => {
-  expect(await makeMediaPort(config(id)).generate(call({ params }), signal())).toMatchObject({
-    ok: false,
-    executed: false,
-  })
-  expect(seen).toEqual([])
-})
-
-test.each(SERIES_006)(
-  '006 系列混合 30 图、10 视频、10 音频时保留内容和各类顺序：$id',
-  async ({ id, max, portrait }) => {
-    const images = Array.from({ length: 30 }, (_, i) => fullInput('reference', i))
-    const videos = Array.from({ length: 10 }, (_, i) => fullInput('video', i))
-    const audios = Array.from({ length: 10 }, (_, i) => ({
-      ...fullInput('audio', i),
-      mime: 'audio/mp3',
-    }))
-    const inputs = [videos[0]!, audios[0]!, ...images, ...videos.slice(1), ...audios.slice(1)]
+    seen = []
+    const spends: MediaSpend[] = []
     expect(
-      await makeMediaPort(config(id)).generate(
-        call({ inputs, params: { seconds: String(max), size: portrait } }),
+      await makeMediaPort(config(), (spend) => spends.push(spend)).generate(
+        call({ params: { seconds, size } }),
         signal(),
       ),
-    ).toMatchObject({ ok: true })
-    expect(seen[0]?.contentType).toContain('application/json')
-    expect(seen[0]?.body).toEqual({
-      model: id,
-      prompt: PROMPT,
-      seconds: String(max),
-      size: portrait,
-      images: images.map((i) => `data:image/png;base64,${Buffer.from(i.bytes).toString('base64')}`),
-      videos: videos.map((i) => `data:video/mp4;base64,${Buffer.from(i.bytes).toString('base64')}`),
-      audios: audios.map(
-        (i) => `data:audio/mpeg;base64,${Buffer.from(i.bytes).toString('base64')}`,
-      ),
-    })
-  },
-)
-
-test.each(
-  SERIES_006.flatMap((model) => (['video', 'audio'] as const).map((role) => ({ ...model, role }))),
-)('006 系列允许单独视频或音频参考：%j', async ({ id, landscape, role }) => {
-  const input = fullInput(role)
-  expect(
-    await makeMediaPort(config(id)).generate(call({ inputs: [input] }), signal()),
-  ).toMatchObject({ ok: true })
-  expect(seen[0]?.body).toEqual({
-    model: id,
-    prompt: PROMPT,
-    seconds: '5',
-    size: landscape,
-    [role === 'video' ? 'videos' : 'audios']: [
-      `data:${input.mime};base64,${Buffer.from(input.bytes).toString('base64')}`,
-    ],
-  })
+    ).toMatchObject({ ok: true, model: MODEL })
+    expect(seen[0]?.body).toEqual({ model: MODEL, prompt: PROMPT, seconds, size })
+    expect(spends).toMatchObject([{ cost: 7.5, currency: 'CNY', quantity: null }])
+  }
 })
-
-test.each(
-  SERIES_006.flatMap((model) =>
-    (
-      [
-        ['reference', 31],
-        ['video', 11],
-        ['audio', 11],
-        ['first_frame', 1],
-        ['last_frame', 1],
-      ] as const
-    ).map(([role, count]) => ({ ...model, role, count })),
-  ),
-)('006 系列拒绝超限素材和首尾帧：%j', async ({ id, role, count }) => {
-  const input = fullInput(role === 'audio' ? 'audio' : role === 'video' ? 'video' : 'reference')
-  const inputs = Array.from({ length: count }, () => ({ ...input, role }))
-  expect(await makeMediaPort(config(id)).generate(call({ inputs }), signal())).toMatchObject({
-    ok: false,
-    executed: false,
-  })
-  expect(seen).toEqual([])
-})
-
-test.each([SERIES_006_720, SERIES_006_480])(
-  '当前型号拒绝伪装 MP3 的音频，图片也不提前提交：%s',
-  async (model) => {
-    const inputs = [fullInput('reference'), { ...fullInput('audio'), bytes: MP4 }]
-    const result = await makeMediaPort(config(model)).generate(call({ inputs }), signal())
-    expect(result).toMatchObject({ ok: false })
-    if (result.ok) throw new Error('expected failure')
-    expect(result.message).toContain('仅支持 MP3')
-    expect(seen).toEqual([])
-  },
-)
 
 test('满血全参版混合素材分别进入 images、videos、audios 并保持各自顺序', async () => {
   const inputs = [
@@ -791,7 +737,7 @@ test('满血全参版混合素材分别进入 images、videos、audios 并保持
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     'POST /v1/videos',
     `GET /v1/video/generations/${TASK}`,
-    `GET /v1/videos/${TASK}/content`,
+    `GET /generated/${TASK}.mp4`,
   ])
 })
 
@@ -880,7 +826,7 @@ test.each([false, true])(
     expect(phases).toEqual(['queued'])
     expect(seen.filter((s) => s.method === 'POST')).toHaveLength(resume ? 0 : 1)
     expect(seen.filter((s) => s.path === `/v1/video/generations/${TASK}`)).toHaveLength(2)
-    expect(seen.at(-1)?.path).toBe(`/v1/videos/${TASK}/content`)
+    expect(seen.at(-1)?.path).toBe(`/generated/${TASK}.mp4`)
   },
   10000,
 )

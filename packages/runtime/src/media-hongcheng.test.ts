@@ -7,8 +7,31 @@ import { makeMediaPort } from './media.ts'
 
 const MODEL = 'TTseadanco2.5-720'
 const MODELS = [
-  { id: MODEL, min: 5, defaultSeconds: '5', rate: 0.42, resolution: '720p' },
-  { id: 'TTsedanco2.5-480', min: 5, defaultSeconds: '5', rate: 0.312, resolution: '480p' },
+  { id: MODEL, min: 5, defaultSeconds: '5', rate: 0.42, resolution: '720p', maxVideos: 10 },
+  {
+    id: 'TTsedanco2.5-480',
+    min: 5,
+    defaultSeconds: '5',
+    rate: 0.312,
+    resolution: '480p',
+    maxVideos: 10,
+  },
+  {
+    id: 'GGseadanco2.5/720',
+    min: 5,
+    defaultSeconds: '5',
+    rate: 0.54,
+    resolution: '720p',
+    maxVideos: 10,
+  },
+  {
+    id: 'GGsedanco2.5/480',
+    min: 5,
+    defaultSeconds: '5',
+    rate: 0.42,
+    resolution: '480p',
+    maxVideos: 0,
+  },
 ]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
@@ -95,7 +118,7 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录仅保留 TT 系列，移除失效型号规格', () => {
+test('hongcheng 目录收录 TT 与 GG 系列，不包含失效型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
@@ -116,16 +139,19 @@ test.each(MODELS)('型号不接受其他分辨率，拒绝发生在上传之前�
   expect(seen).toEqual([])
 })
 
-test.each(MODELS)('渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id', ({ id }) => {
-  expect(findMediaModel(id)).toMatchObject({
-    displayName: id,
-    vendor: 'hongcheng',
-    videoFormat: 'hongcheng',
-    inputs: { maxImages: 30, maxVideos: 10, maxAudios: 10 },
-    mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
-  })
-  expect(lookupMediaModel(id, 'ark_videos').catalogued).toBe(false)
-})
+test.each(MODELS)(
+  '渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id',
+  ({ id, maxVideos }) => {
+    expect(findMediaModel(id)).toMatchObject({
+      displayName: id,
+      vendor: 'hongcheng',
+      videoFormat: 'hongcheng',
+      inputs: { maxImages: 30, maxVideos, maxAudios: 10 },
+      mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
+    })
+    expect(lookupMediaModel(id, 'ark_videos').catalogued).toBe(false)
+  },
+)
 
 test.each(MODELS)(
   '报价按渠道计费单位计算，省略时长使用模型默认值：$id',
@@ -198,9 +224,9 @@ test.each(['', '/v1'])('默认参数提交并按接口回报秒数计量，地�
 })
 
 test.each(MODELS)(
-  '三类素材按原始 MIME 和字节上传，URL 按同类顺序提交：$id',
-  async ({ id, resolution }) => {
-    const references = [inputs[0]!, inputs[1]!, inputs[0]!, inputs[2]!]
+  '支持的素材按原始 MIME 和字节上传，URL 按同类顺序提交：$id',
+  async ({ id, resolution, maxVideos }) => {
+    const references = [inputs[0]!, inputs[0]!, inputs[2]!, ...(maxVideos ? [inputs[1]!] : [])]
     const tasks: unknown[] = []
     const result = await makeMediaPort(config('/v1', id)).generate(
       {
@@ -208,7 +234,9 @@ test.each(MODELS)(
         inputs: references,
         params: { seconds: '30', aspect_ratio: '9:16' },
         onSubmit: () =>
-          expect(seen.map((entry) => entry.path)).toEqual(Array(4).fill('/refhost/upload')),
+          expect(seen.map((entry) => entry.path)).toEqual(
+            Array(references.length).fill('/refhost/upload'),
+          ),
         onTask: (task) => {
           tasks.push(task)
         },
@@ -216,24 +244,35 @@ test.each(MODELS)(
       signal(),
     )
     expect(result.ok).toBe(true)
-    expect(seen.slice(0, 4).map((entry) => ({ bytes: entry.bytes, mime: entry.mime }))).toEqual(
-      references.map((input) => ({ bytes: input.bytes, mime: input.mime })),
+    expect(
+      seen.slice(0, references.length).map((entry) => ({ bytes: entry.bytes, mime: entry.mime })),
+    ).toEqual(references.map((input) => ({ bytes: input.bytes, mime: input.mime })))
+    expect(seen.slice(0, references.length).every((entry) => entry.xhr === 'XMLHttpRequest')).toBe(
+      true,
     )
-    expect(seen.slice(0, 4).every((entry) => entry.xhr === 'XMLHttpRequest')).toBe(true)
-    expect(seen[4]?.body).toEqual({
+    expect(seen[references.length]?.body).toEqual({
       model: id,
       prompt: call().prompt,
       seconds: '30',
       resolution,
       aspect_ratio: '9:16',
       ratio: '9:16',
-      reference_images: ['https://assets.example/1', 'https://assets.example/3'],
-      reference_videos: ['https://assets.example/2'],
-      reference_audios: ['https://assets.example/4'],
+      reference_images: ['https://assets.example/1', 'https://assets.example/2'],
+      ...(maxVideos ? { reference_videos: ['https://assets.example/4'] } : {}),
+      reference_audios: ['https://assets.example/3'],
     })
     expect(tasks).toEqual([{ provider: 'hongcheng', model: id, taskId: 'task_hongcheng' }])
   },
 )
+
+test('GG 480p 不接受参考视频，拒绝发生在上传和生成之前', async () => {
+  const id = 'GGsedanco2.5/480'
+  expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
+  expect(
+    await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
+  ).toMatchObject({ ok: false, executed: false })
+  expect(seen).toEqual([])
+})
 
 test.each([
   { seconds: 5 },
