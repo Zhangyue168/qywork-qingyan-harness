@@ -1,5 +1,7 @@
 /** Mumugofe 从已配置模型、参数校验到实际 HTTP 请求与任务恢复的回归测试。 */
+
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import type { MediaCall } from '@qywork/agent'
 import {
   findMediaModel,
@@ -46,6 +48,12 @@ let status: 'completed' | 'failed'
 let contentStatus: number
 let taskStatuses: string[]
 let resultUrl: unknown
+interface UploadedAsset {
+  asset: { id: string; sha256: string; bytes: number }
+  url: string
+}
+let uploadResponse: ((body: UploadedAsset) => unknown) | undefined
+let uploadStatus: number
 
 beforeAll(() => {
   server = Bun.serve({
@@ -60,7 +68,19 @@ beforeAll(() => {
         contentType: req.headers.get('content-type'),
         uploadHeader: req.headers.get('x-upload-secret'),
         ...(req.method === 'POST' ? { body: await req.json() } : {}),
+        ...(req.method === 'PUT' ? { body: new Uint8Array(await req.arrayBuffer()) } : {}),
       })
+      if (req.method === 'PUT' && path.startsWith('/v1/studio/assets/')) {
+        const bytes = seen.at(-1)!.body as Uint8Array
+        const digest = createHash('sha256').update(bytes).digest('hex')
+        expect(path).toBe(`/v1/studio/assets/${digest}`)
+        const id = `studioasset_${'a'.repeat(64)}_${digest}`
+        const body = {
+          asset: { id, sha256: digest, bytes: bytes.length },
+          url: `http://127.0.0.1:${server.port}/v1/studio/assets/${id}/artifacts/source/content?signature=test`,
+        }
+        return Response.json(uploadResponse ? uploadResponse(body) : body, { status: uploadStatus })
+      }
       if (req.method === 'POST' && path === '/v1/videos')
         return Response.json({ id: TASK, status: 'queued', object: 'video' })
       if (req.method === 'GET' && path === `/v1/videos/${TASK}`)
@@ -107,6 +127,8 @@ beforeEach(() => {
   status = 'completed'
   contentStatus = 200
   taskStatuses = []
+  uploadResponse = undefined
+  uploadStatus = 200
   resultUrl = `http://127.0.0.1:${server.port}/generated/${TASK}.mp4`
 })
 
@@ -232,118 +254,82 @@ test.each<MediaInputRole>(['video', 'audio', 'first_frame', 'last_frame'])(
   },
 )
 
-test('参考图经指定上传接口后向 mumu 提交公网地址，凭证和输入顺序保持独立', async () => {
-  const uploads: { bytes: Uint8Array; auth: string | null; type: string | null }[] = []
-  const host = Bun.serve({
-    hostname: '127.0.0.1',
-    port: 0,
-    async fetch(req) {
-      expect(new URL(req.url).pathname).toBe('/refhost/upload')
-      expect(req.headers.get('x-mumu-secret')).toBeNull()
-      expect(req.headers.get('x-upload-secret')).toBe('upload-header')
-      uploads.push({
-        bytes: new Uint8Array(await req.arrayBuffer()),
-        auth: req.headers.get('authorization'),
-        type: req.headers.get('content-type'),
-      })
-      return Response.json({ url: `https://assets.test/${uploads.length}.png` })
-    },
+test('参考图直接上传到 mumu，原图字节、凭证和输入顺序保持一致', async () => {
+  const inputs = [PNG, new Uint8Array([...PNG, 2])].map((bytes, i) => ({
+    role: 'reference' as const,
+    bytes,
+    mime: 'image/png',
+    path: `/reference-${i}.png`,
+  }))
+  const result = await makeMediaPort(config()).generate(
+    call({
+      inputs,
+      params: { seconds: '30' },
+      onSubmit: () => {
+        expect(seen.map((entry) => entry.method)).toEqual(['PUT', 'PUT'])
+      },
+    }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
+  expect(seen.slice(0, 2).map((entry) => entry.body)).toEqual(inputs.map((input) => input.bytes))
+  expect(seen.slice(0, 2).every((entry) => entry.contentType === 'image/png')).toBe(true)
+  expect(seen[2]?.body).toEqual({
+    model: MODEL,
+    prompt: PROMPT,
+    seconds: '30',
+    size: '1280x720',
+    images: inputs.map((input) => {
+      const digest = createHash('sha256').update(input.bytes).digest('hex')
+      return `http://127.0.0.1:${server.port}/v1/studio/assets/studioasset_${'a'.repeat(64)}_${digest}/artifacts/source/content?signature=test`
+    }),
   })
-  try {
-    const cfg = config()
-    cfg.providers.mumugofe!.headers = { 'x-mumu-secret': 'mumu-header' }
-    cfg.providers.mumugofe!.media![MODEL]!.hongchengUploadProvider = 'reference-host'
-    cfg.providers['reference-host'] = {
-      kind: 'openai_chat_completions',
-      apiKey: 'upload-only-key',
-      baseUrl: `http://127.0.0.1:${host.port}/v1`,
-      headers: { 'x-upload-secret': 'upload-header' },
-      models: {},
-    }
-    const inputs = [PNG, new Uint8Array([...PNG, 2])].map((bytes, i) => ({
-      role: 'reference' as const,
-      bytes,
-      mime: 'image/png',
-      path: `/reference-${i}.png`,
-    }))
-    const result = await makeMediaPort(cfg).generate(
-      call({
-        inputs,
-        params: { seconds: '30' },
-        onSubmit: () => {
-          expect(uploads).toHaveLength(2)
-          expect(seen).toEqual([])
-        },
-      }),
-      signal(),
-    )
-    expect(result).toMatchObject({ ok: true, files: [{ bytes: MP4 }] })
-    expect(uploads).toEqual(
-      inputs.map((input) => ({
-        bytes: input.bytes,
-        auth: 'Bearer upload-only-key',
-        type: input.mime,
-      })),
-    )
-    expect(seen[0]?.body).toEqual({
-      model: MODEL,
-      prompt: PROMPT,
-      seconds: '30',
-      size: '1280x720',
-      images: ['https://assets.test/1.png', 'https://assets.test/2.png'],
-    })
-    expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
-    expect(seen.every((entry) => entry.uploadHeader === null)).toBe(true)
-  } finally {
-    host.stop(true)
-  }
+  expect(seen.every((entry) => entry.auth === 'Bearer test-only-key')).toBe(true)
 })
 
-test.each([403, 'http://assets.test/ref.png', 'https://user:secret@assets.test/ref.png', ''])(
-  '上传失败或地址无效时不提交生成：%s',
-  async (response) => {
-    const host = Bun.serve({
-      hostname: '127.0.0.1',
-      port: 0,
-      fetch: () =>
-        typeof response === 'number'
-          ? new Response('upload rejected', { status: response })
-          : Response.json({ url: response }),
-    })
-    try {
-      const cfg = config()
-      cfg.providers.mumugofe!.media![MODEL]!.hongchengUploadProvider = 'host'
-      cfg.providers.host = {
-        kind: 'openai_chat_completions',
-        models: {},
-        apiKey: 'upload-only-key',
-        baseUrl: `http://127.0.0.1:${host.port}/v1`,
-      }
-      const result = await makeMediaPort(cfg).generate(
-        call({ inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/ref.png' }] }),
-        signal(),
-      )
-      expect(result).toMatchObject({ ok: false, diagnostic: { stage: 'upload' } })
-      expect(result).not.toHaveProperty('pendingTaskId')
-      expect(seen).toEqual([])
-    } finally {
-      host.stop(true)
-    }
-  },
-)
+test.each([
+  'http',
+  'missing',
+  'hash',
+  'bytes',
+  'id',
+  'origin',
+  'credentials',
+  'path',
+  'signature',
+  'fragment',
+])('原生上传失败或回执无效时不提交生成：%s', async (fault) => {
+  if (fault === 'http') uploadStatus = 403
+  uploadResponse = (body) => {
+    if (fault === 'missing') return {}
+    if (fault === 'hash') body.asset.sha256 = 'b'.repeat(64)
+    if (fault === 'bytes') body.asset.bytes += 1
+    if (fault === 'id') body.asset.id = 'unexpected'
+    const url = new URL(body.url)
+    if (fault === 'origin') url.hostname = 'assets.test'
+    if (fault === 'credentials') url.username = 'unexpected'
+    if (fault === 'path') url.pathname = '/unexpected'
+    if (fault === 'signature') url.search = ''
+    if (fault === 'fragment') url.hash = '#unexpected'
+    body.url = url.href
+    return body
+  }
+  const result = await makeMediaPort(config()).generate(
+    call({
+      inputs: [{ role: 'reference', bytes: PNG, mime: 'image/png', path: '/ref.png' }],
+    }),
+    signal(),
+  )
+  expect(result).toMatchObject({ ok: false, diagnostic: { stage: 'upload' } })
+  expect(result).not.toHaveProperty('pendingTaskId')
+  expect(seen.map((entry) => entry.method)).toEqual(['PUT'])
+})
 
-test('缺少上传配置时拒绝参考图，已有任务恢复仍可查询下载', async () => {
+test('已有任务恢复不重新上传原图，只查询和下载', async () => {
   const inputs = [{ role: 'reference' as const, bytes: PNG, mime: 'image/png', path: '/ref.png' }]
-  const port = makeMediaPort(config())
-  expect(await port.generate(call({ inputs }), signal())).toMatchObject({
-    ok: false,
-    executed: false,
-    message: expect.stringContaining('hongchengUploadProvider'),
-  })
-  expect(seen).toEqual([])
-  expect(await port.generate(call({ inputs, resumeTaskId: TASK }), signal())).toMatchObject({
-    ok: true,
-  })
+  expect(
+    await makeMediaPort(config()).generate(call({ inputs, resumeTaskId: TASK }), signal()),
+  ).toMatchObject({ ok: true })
   expect(seen.every((entry) => entry.method === 'GET')).toBe(true)
 })
 
@@ -360,7 +346,6 @@ test('参考图超过三十张时在上传前拒绝', async () => {
     signal(),
   )
   expect(result).toMatchObject({ ok: false, executed: false })
-  if (!result.ok) expect(result.message).not.toContain('hongchengUploadProvider')
   expect(seen).toEqual([])
 })
 

@@ -12,8 +12,24 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
   { id: 'TTsedanco2.5-480', resolution: '480p', maxVideos: 10, price: perSecond(0.312) },
   { id: 'GGseadanco2.5/720', resolution: '720p', maxVideos: 10, price: perSecond(0.54) },
   { id: 'GGsedanco2.5/480', resolution: '480p', maxVideos: 0, price: perSecond(0.42) },
+  {
+    id: 'seedance-2.5（YX）',
+    resolution: '720p',
+    maxVideos: 10,
+    minSeconds: 4,
+    defaultSeconds: '30',
+    price: perSecond(0.4),
+  },
+  {
+    id: 'seedance2.5-yx-count',
+    resolution: '720p',
+    maxVideos: 10,
+    minSeconds: 4,
+    defaultSeconds: '30',
+    price: { currency: 'CNY' as const, cost: () => 5.6, usageOf: () => ({}) },
+  },
 ].map(
-  ({ id, resolution, maxVideos, price }): MediaModelSpec => ({
+  ({ id, resolution, maxVideos, minSeconds = 5, defaultSeconds = '5', price }): MediaModelSpec => ({
     id,
     displayName: id,
     vendor: 'hongcheng',
@@ -30,12 +46,15 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
         name: 'seconds',
         label: '时长',
         type: 'enum',
-        values: Array.from({ length: 26 }, (_, i) => String(i + 5)),
+        values: Array.from({ length: 31 - minSeconds }, (_, i) => String(i + minSeconds)),
         valueLabels: Object.fromEntries(
-          Array.from({ length: 26 }, (_, i) => [i + 5, `${i + 5}秒`]),
+          Array.from({ length: 31 - minSeconds }, (_, i) => [
+            i + minSeconds,
+            `${i + minSeconds}秒`,
+          ]),
         ),
-        default: '5',
-        description: '5–30 秒整数，使用字符串',
+        default: defaultSeconds,
+        description: `${minSeconds}–30 秒整数，使用字符串`,
       },
       {
         name: 'aspect_ratio',

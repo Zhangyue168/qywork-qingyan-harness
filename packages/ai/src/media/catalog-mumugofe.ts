@@ -1,6 +1,6 @@
 /**
  * Mumugofe 渠道使用 /v1/videos 提交，素材通过 JSON 字段传递。
- * seedance2.5-V 为 720P、5–30 秒，按次计费；参考图通过配置的 hongcheng 接口上传。
+ * seedance2.5-V 为 720P、5–30 秒，按次计费；参考图通过本渠道的 studio/assets 接口上传。
  * 保留渠道原始编号，不继承官方 Seedance 的素材格式或价格。
  */
 import type { MediaModelSpec, MediaParamSpec } from './catalog.ts'

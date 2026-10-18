@@ -32,6 +32,23 @@ const MODELS = [
     resolution: '480p',
     maxVideos: 0,
   },
+  {
+    id: 'seedance-2.5（YX）',
+    min: 4,
+    defaultSeconds: '30',
+    rate: 0.4,
+    resolution: '720p',
+    maxVideos: 10,
+  },
+  {
+    id: 'seedance2.5-yx-count',
+    min: 4,
+    defaultSeconds: '30',
+    rate: 5.6,
+    perRequest: true,
+    resolution: '720p',
+    maxVideos: 10,
+  },
 ]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])
@@ -118,13 +135,13 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录收录 TT 与 GG 系列，不包含失效型号规格', () => {
+test('hongcheng 目录收录 TT、GG 与 YX 系列，不包含失效型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
       .map((model) => model.id),
   ).toEqual(MODELS.map((model) => model.id))
-  for (const id of ['seedance-2.5（YX）', 'seedance2.5-yx-count', 'wf-sd2.5-v2']) {
+  for (const id of ['seedance-2.5（YX）-按次', 'wf-sd2.5-v2']) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
   }
@@ -155,19 +172,22 @@ test.each(MODELS)(
 
 test.each(MODELS)(
   '报价按渠道计费单位计算，省略时长使用模型默认值：$id',
-  ({ id, min, defaultSeconds, rate }) => {
+  ({ id, min, defaultSeconds, rate, perRequest }) => {
     const spec = findMediaModel(id)!
     for (const seconds of [undefined, String(min), '10', '30']) {
       const quote = quoteMedia(spec, seconds ? { seconds } : {}, { images: 1, videos: 0 })
       expect(quote?.currency).toBe('CNY')
-      expect(quote?.cost).toBeCloseTo(Number(seconds ?? defaultSeconds) * rate, 10)
+      expect(quote?.cost).toBeCloseTo(
+        perRequest ? rate : Number(seconds ?? defaultSeconds) * rate,
+        10,
+      )
     }
   },
 )
 
 test.each(MODELS)(
-  '默认参数提交准确模型 ID 与分辨率，按响应秒数记账：$id',
-  async ({ id, defaultSeconds, rate, resolution }) => {
+  '默认参数提交准确模型 ID 与分辨率，费用遵循型号计费单位：$id',
+  async ({ id, defaultSeconds, rate, resolution, perRequest }) => {
     const spends: MediaSpend[] = []
     const result = await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
       call(),
@@ -183,9 +203,19 @@ test.each(MODELS)(
       ratio: '16:9',
     })
     expect(spends[0]).toMatchObject({ quantity: 5, currency: 'CNY' })
-    expect(spends[0]?.cost).toBeCloseTo(5 * rate, 10)
+    expect(spends[0]?.cost).toBeCloseTo(perRequest ? rate : 5 * rate, 10)
   },
 )
+
+test('YX 按次型号在响应缺少秒数时仍记录一次生成的目录估价', async () => {
+  poll = { status: 'completed' }
+  const spends: MediaSpend[] = []
+  const result = await makeMediaPort(config('', 'seedance2.5-yx-count'), (spend) =>
+    spends.push(spend),
+  ).generate(call(), signal())
+  expect(result.ok).toBe(true)
+  expect(spends[0]).toMatchObject({ quantity: null, cost: 5.6, currency: 'CNY' })
+})
 
 test.each(MODELS)('时长下限可提交，低于下限或超过上限时不上传：$id', async ({ id, min }) => {
   const port = makeMediaPort(config('', id))
@@ -327,23 +357,26 @@ test('上传鉴权失败明确未提交，允许随后重新尝试', async () =>
   expect((await port.generate({ ...call(), inputs }, signal())).ok).toBe(true)
 })
 
-test.each(MODELS)('任务取回不重复上传或提交，缺失秒数时不推算费用：$id', async ({ id }) => {
-  poll = { status: 'completed' }
-  const spends: MediaSpend[] = []
-  expect(
-    (
-      await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
-        { ...call(), inputs, resumeTaskId: 'task_hongcheng' },
-        signal(),
-      )
-    ).ok,
-  ).toBe(true)
-  expect(seen.map((entry) => `${entry.method} ${entry.path}`)).toEqual([
-    'GET /v1/videos/task_hongcheng',
-    'GET /v1/videos/task_hongcheng/content',
-  ])
-  expect(spends[0]).toMatchObject({ quantity: null, cost: 0 })
-})
+test.each(MODELS)(
+  '任务取回不重复上传或提交，缺失秒数仅影响按秒计费：$id',
+  async ({ id, perRequest, rate }) => {
+    poll = { status: 'completed' }
+    const spends: MediaSpend[] = []
+    expect(
+      (
+        await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
+          { ...call(), inputs, resumeTaskId: 'task_hongcheng' },
+          signal(),
+        )
+      ).ok,
+    ).toBe(true)
+    expect(seen.map((entry) => `${entry.method} ${entry.path}`)).toEqual([
+      'GET /v1/videos/task_hongcheng',
+      'GET /v1/videos/task_hongcheng/content',
+    ])
+    expect(spends[0]).toMatchObject({ quantity: null, cost: perRequest ? rate : 0 })
+  },
+)
 
 test('远端拒绝保留错误原文，下载失败保留原任务号', async () => {
   poll = { status: 'failed', error: { code: 'upstream_rejected', message: '参考素材无法读取' } }
