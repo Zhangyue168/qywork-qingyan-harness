@@ -28,23 +28,14 @@ const MODELS = [
     id: 'seedance2.5-aa-count',
     min: 4,
     defaultSeconds: '30',
-    rate: 5.6,
+    rate: 6,
     perRequest: true,
     resolution: '720p',
     maxVideos: 10,
   },
   {
-    id: 'XG-Seedance-2.5-720p-2',
-    min: 4,
-    defaultSeconds: '30',
-    rate: 6.6,
-    perRequest: true,
-    resolution: '720p',
-    maxVideos: 0,
-  },
-  {
-    id: 'lec-vp-seedance-2-5-301010-1',
-    min: 10,
+    id: 'seedance-2.5  AA-按次',
+    min: 30,
     defaultSeconds: '30',
     rate: 5.5,
     perRequest: true,
@@ -137,7 +128,7 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录收录保留型号与 VP，不包含移除型号规格', () => {
+test('hongcheng 目录仅收录选定的五个型号，不包含移除型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
@@ -151,6 +142,8 @@ test('hongcheng 目录收录保留型号与 VP，不包含移除型号规格', (
     'GGsedanco2.5/480',
     'seedance-2.5（AA）',
     'sd2.5-pp-1080p',
+    'XG-Seedance-2.5-720p-2',
+    'lec-vp-seedance-2-5-301010-1',
   ]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
@@ -184,7 +177,7 @@ test.each(MODELS)(
   '报价按渠道计费单位计算，省略时长使用模型默认值：$id',
   ({ id, min, defaultSeconds, rate, perRequest }) => {
     const spec = findMediaModel(id)!
-    for (const seconds of [undefined, String(min), '10', '30']) {
+    for (const seconds of [undefined, String(min), String(Math.max(10, min)), '30']) {
       const quote = quoteMedia(spec, seconds ? { seconds } : {}, { images: 1, videos: 0 })
       expect(quote?.currency).toBe('CNY')
       expect(quote?.cost).toBeCloseTo(
@@ -218,9 +211,8 @@ test.each(MODELS)(
 )
 
 test.each([
-  { id: 'seedance2.5-aa-count', rate: 5.6 },
-  { id: 'XG-Seedance-2.5-720p-2', rate: 6.6 },
-  { id: 'lec-vp-seedance-2-5-301010-1', rate: 5.5 },
+  { id: 'seedance2.5-aa-count', rate: 6 },
+  { id: 'seedance-2.5  AA-按次', rate: 5.5 },
 ])('按次型号在响应缺少秒数时仍记录一次生成的目录估价：$id', async ({ id, rate }) => {
   poll = { status: 'completed' }
   const spends: MediaSpend[] = []
@@ -310,18 +302,14 @@ test.each(MODELS)(
   },
 )
 
-test.each(['XG-Seedance-2.5-720p-2'])('不支持参考视频的型号在上传和生成前拒绝：%s', async (id) => {
-  expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
-  expect(
-    await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
-  ).toMatchObject({ ok: false, executed: false })
-  expect(seen).toEqual([])
-})
-
-test('XG 按次支持三种画幅及 30 图 10 音频，超限在上传前拒绝', async () => {
-  const id = 'XG-Seedance-2.5-720p-2'
+test('AA 按次支持三种画幅及 30 图 10 视频 10 音频，超限在上传前拒绝', async () => {
+  const id = 'seedance2.5-aa-count'
   const port = makeMediaPort(config('', id))
-  for (const references of [Array(31).fill(inputs[0]), Array(11).fill(inputs[2])]) {
+  for (const references of [
+    Array(31).fill(inputs[0]),
+    Array(11).fill(inputs[1]),
+    Array(11).fill(inputs[2]),
+  ]) {
     expect(await port.generate({ ...call(), inputs: references }, signal())).toMatchObject({
       ok: false,
       executed: false,
@@ -341,23 +329,27 @@ test('XG 按次支持三种画幅及 30 图 10 音频，超限在上传前拒绝
         await port.generate(
           {
             ...call(),
-            inputs: [...Array(30).fill(inputs[0]), ...Array(10).fill(inputs[2])],
+            inputs: [
+              ...Array(30).fill(inputs[0]),
+              ...Array(10).fill(inputs[1]),
+              ...Array(10).fill(inputs[2]),
+            ],
             params: { aspect_ratio: ratio },
           },
           signal(),
         )
       ).ok,
     ).toBe(true)
-    expect(seen[40]?.body).toMatchObject({
+    expect(seen[50]?.body).toMatchObject({
       model: id,
       resolution: '720p',
       seconds: '30',
       aspect_ratio: ratio,
       ratio,
     })
-    expect(seen[40]?.body?.reference_images).toHaveLength(30)
-    expect(seen[40]?.body?.reference_audios).toHaveLength(10)
-    expect(seen[40]?.body?.reference_videos).toBeUndefined()
+    expect(seen[50]?.body?.reference_images).toHaveLength(30)
+    expect(seen[50]?.body?.reference_audios).toHaveLength(10)
+    expect(seen[50]?.body?.reference_videos).toHaveLength(10)
   }
 })
 
