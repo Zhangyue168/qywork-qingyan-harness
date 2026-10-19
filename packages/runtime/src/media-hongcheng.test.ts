@@ -12,7 +12,7 @@ const MODELS = [
     id: 'TTsedanco2.5-480',
     min: 5,
     defaultSeconds: '5',
-    rate: 0.312,
+    rate: 0.31,
     resolution: '480p',
     maxVideos: 10,
   },
@@ -33,7 +33,7 @@ const MODELS = [
     maxVideos: 0,
   },
   {
-    id: 'seedance-2.5（YX）',
+    id: 'seedance-2.5（AA）',
     min: 4,
     defaultSeconds: '30',
     rate: 0.4,
@@ -41,13 +41,24 @@ const MODELS = [
     maxVideos: 10,
   },
   {
-    id: 'seedance2.5-yx-count',
+    id: 'seedance2.5-aa-count',
     min: 4,
     defaultSeconds: '30',
     rate: 5.6,
     perRequest: true,
     resolution: '720p',
     maxVideos: 10,
+  },
+  {
+    id: 'sd2.5-pp-1080p',
+    min: 4,
+    defaultSeconds: '30',
+    rate: 14.4,
+    perRequest: true,
+    resolution: '1080p',
+    maxImages: 9,
+    maxVideos: 0,
+    maxAudios: 3,
   },
 ]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
@@ -135,13 +146,18 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录收录 TT、GG 与 YX 系列，不包含失效型号规格', () => {
+test('hongcheng 目录收录 TT、GG、AA 与 PP 系列，不包含失效型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
       .map((model) => model.id),
   ).toEqual(MODELS.map((model) => model.id))
-  for (const id of ['seedance-2.5（YX）-按次', 'wf-sd2.5-v2']) {
+  for (const id of [
+    'seedance-2.5（YX）',
+    'seedance2.5-yx-count',
+    'seedance-2.5（YX）-按次',
+    'wf-sd2.5-v2',
+  ]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
   }
@@ -158,12 +174,12 @@ test.each(MODELS)('型号不接受其他分辨率，拒绝发生在上传之前�
 
 test.each(MODELS)(
   '渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id',
-  ({ id, maxVideos }) => {
+  ({ id, maxImages = 30, maxVideos, maxAudios = 10 }) => {
     expect(findMediaModel(id)).toMatchObject({
       displayName: id,
       vendor: 'hongcheng',
       videoFormat: 'hongcheng',
-      inputs: { maxImages: 30, maxVideos, maxAudios: 10 },
+      inputs: { maxImages, maxVideos, maxAudios },
       mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
     })
     expect(lookupMediaModel(id, 'ark_videos').catalogued).toBe(false)
@@ -207,14 +223,18 @@ test.each(MODELS)(
   },
 )
 
-test('YX 按次型号在响应缺少秒数时仍记录一次生成的目录估价', async () => {
+test.each([
+  { id: 'seedance2.5-aa-count', rate: 5.6 },
+  { id: 'sd2.5-pp-1080p', rate: 14.4 },
+])('按次型号在响应缺少秒数时仍记录一次生成的目录估价：$id', async ({ id, rate }) => {
   poll = { status: 'completed' }
   const spends: MediaSpend[] = []
-  const result = await makeMediaPort(config('', 'seedance2.5-yx-count'), (spend) =>
-    spends.push(spend),
-  ).generate(call(), signal())
+  const result = await makeMediaPort(config('', id), (spend) => spends.push(spend)).generate(
+    call(),
+    signal(),
+  )
   expect(result.ok).toBe(true)
-  expect(spends[0]).toMatchObject({ quantity: null, cost: 5.6, currency: 'CNY' })
+  expect(spends[0]).toMatchObject({ quantity: null, cost: rate, currency: 'CNY' })
 })
 
 test.each(MODELS)('时长下限可提交，低于下限或超过上限时不上传：$id', async ({ id, min }) => {
@@ -295,13 +315,58 @@ test.each(MODELS)(
   },
 )
 
-test('GG 480p 不接受参考视频，拒绝发生在上传和生成之前', async () => {
-  const id = 'GGsedanco2.5/480'
-  expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
-  expect(
-    await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
-  ).toMatchObject({ ok: false, executed: false })
+test.each(['GGsedanco2.5/480', 'sd2.5-pp-1080p'])(
+  '不支持参考视频的型号在上传和生成前拒绝：%s',
+  async (id) => {
+    expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
+    expect(
+      await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
+    ).toMatchObject({ ok: false, executed: false })
+    expect(seen).toEqual([])
+  },
+)
+
+test('PP 1080p 支持六种画幅及 9 图 3 音频，超限在上传前拒绝', async () => {
+  const id = 'sd2.5-pp-1080p'
+  const port = makeMediaPort(config('', id))
+  for (const references of [Array(10).fill(inputs[0]), Array(4).fill(inputs[2])]) {
+    expect(await port.generate({ ...call(), inputs: references }, signal())).toMatchObject({
+      ok: false,
+      executed: false,
+    })
+  }
   expect(seen).toEqual([])
+  const ratios = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
+  expect(
+    findMediaModel(id)
+      ?.params.find((p) => p.name === 'aspect_ratio')
+      ?.shapes?.map((s) => s.value),
+  ).toEqual(ratios)
+  for (const ratio of ratios) {
+    seen = []
+    expect(
+      (
+        await port.generate(
+          {
+            ...call(),
+            inputs: [...Array(9).fill(inputs[0]), ...Array(3).fill(inputs[2])],
+            params: { aspect_ratio: ratio },
+          },
+          signal(),
+        )
+      ).ok,
+    ).toBe(true)
+    expect(seen[12]?.body).toMatchObject({
+      model: id,
+      resolution: '1080p',
+      seconds: '30',
+      aspect_ratio: ratio,
+      ratio,
+    })
+    expect(seen[12]?.body?.reference_images).toHaveLength(9)
+    expect(seen[12]?.body?.reference_audios).toHaveLength(3)
+    expect(seen[12]?.body?.reference_videos).toBeUndefined()
+  }
 })
 
 test.each([
