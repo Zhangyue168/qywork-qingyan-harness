@@ -11,15 +11,6 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
   { id: 'TTseadanco2.5-720', resolution: '720p', maxVideos: 10, price: perSecond(0.42) },
   { id: 'TTsedanco2.5-480', resolution: '480p', maxVideos: 10, price: perSecond(0.31) },
   { id: 'GGseadanco2.5/720', resolution: '720p', maxVideos: 10, price: perSecond(0.54) },
-  { id: 'GGsedanco2.5/480', resolution: '480p', maxVideos: 0, price: perSecond(0.42) },
-  {
-    id: 'seedance-2.5（AA）',
-    resolution: '720p',
-    maxVideos: 10,
-    minSeconds: 4,
-    defaultSeconds: '30',
-    price: perSecond(0.4),
-  },
   {
     id: 'seedance2.5-aa-count',
     resolution: '720p',
@@ -29,28 +20,23 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
     price: { currency: 'CNY' as const, cost: () => 5.6, usageOf: () => ({}) },
   },
   {
-    id: 'sd2.5-pp-1080p',
-    resolution: '1080p',
-    maxImages: 9,
+    id: 'XG-Seedance-2.5-720p-2',
+    resolution: '720p',
     maxVideos: 0,
-    maxAudios: 3,
     minSeconds: 4,
     defaultSeconds: '30',
-    ratios: ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9'],
-    price: { currency: 'CNY' as const, cost: () => 14.4, usageOf: () => ({}) },
+    price: { currency: 'CNY' as const, cost: () => 6.6, usageOf: () => ({}) },
+  },
+  {
+    id: 'lec-vp-seedance-2-5-301010-1',
+    resolution: '720p',
+    maxVideos: 10,
+    minSeconds: 10,
+    defaultSeconds: '30',
+    price: { currency: 'CNY' as const, cost: () => 5.5, usageOf: () => ({}) },
   },
 ].map(
-  ({
-    id,
-    resolution,
-    maxImages = 30,
-    maxVideos,
-    maxAudios = 10,
-    minSeconds = 5,
-    defaultSeconds = '5',
-    ratios = ['16:9', '9:16', '1:1'],
-    price,
-  }): MediaModelSpec => ({
+  ({ id, resolution, maxVideos, minSeconds = 5, defaultSeconds = '5', price }): MediaModelSpec => ({
     id,
     displayName: id,
     vendor: 'hongcheng',
@@ -61,7 +47,7 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
       'reference_to_video',
       ...(maxVideos ? ['video_to_video' as const] : []),
     ],
-    inputs: { maxImages, maxVideos, maxAudios, transport: 'json' },
+    inputs: { maxImages: 30, maxVideos, maxAudios: 10, transport: 'json' },
     params: [
       {
         name: 'seconds',
@@ -81,9 +67,9 @@ export const HONGCHENG_MODELS: readonly MediaModelSpec[] = [
         name: 'aspect_ratio',
         label: '画幅',
         type: 'string',
-        shapes: ratios.map((ratio) => ({ ratio, value: ratio })),
+        shapes: ['16:9', '9:16', '1:1'].map((ratio) => ({ ratio, value: ratio })),
         default: '16:9',
-        description: `支持 ${ratios.join('、')}`,
+        description: '支持 16:9、9:16、1:1',
       },
       {
         name: 'resolution',

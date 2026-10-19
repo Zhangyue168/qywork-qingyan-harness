@@ -25,22 +25,6 @@ const MODELS = [
     maxVideos: 10,
   },
   {
-    id: 'GGsedanco2.5/480',
-    min: 5,
-    defaultSeconds: '5',
-    rate: 0.42,
-    resolution: '480p',
-    maxVideos: 0,
-  },
-  {
-    id: 'seedance-2.5（AA）',
-    min: 4,
-    defaultSeconds: '30',
-    rate: 0.4,
-    resolution: '720p',
-    maxVideos: 10,
-  },
-  {
     id: 'seedance2.5-aa-count',
     min: 4,
     defaultSeconds: '30',
@@ -50,15 +34,22 @@ const MODELS = [
     maxVideos: 10,
   },
   {
-    id: 'sd2.5-pp-1080p',
+    id: 'XG-Seedance-2.5-720p-2',
     min: 4,
     defaultSeconds: '30',
-    rate: 14.4,
+    rate: 6.6,
     perRequest: true,
-    resolution: '1080p',
-    maxImages: 9,
+    resolution: '720p',
     maxVideos: 0,
-    maxAudios: 3,
+  },
+  {
+    id: 'lec-vp-seedance-2-5-301010-1',
+    min: 10,
+    defaultSeconds: '30',
+    rate: 5.5,
+    perRequest: true,
+    resolution: '720p',
+    maxVideos: 10,
   },
 ]
 const MP4 = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70])
@@ -146,7 +137,7 @@ const call = () => ({
 })
 const signal = () => new AbortController().signal
 
-test('hongcheng 目录收录 TT、GG、AA 与 PP 系列，不包含失效型号规格', () => {
+test('hongcheng 目录收录保留型号与 VP，不包含移除型号规格', () => {
   expect(
     mediaCatalog()
       .filter((model) => model.vendor === 'hongcheng')
@@ -157,6 +148,9 @@ test('hongcheng 目录收录 TT、GG、AA 与 PP 系列，不包含失效型号�
     'seedance2.5-yx-count',
     'seedance-2.5（YX）-按次',
     'wf-sd2.5-v2',
+    'GGsedanco2.5/480',
+    'seedance-2.5（AA）',
+    'sd2.5-pp-1080p',
   ]) {
     expect(findMediaModel(id)).toBeUndefined()
     expect(lookupMediaModel(id, 'openai_videos').videoFormat).toBeUndefined()
@@ -174,12 +168,12 @@ test.each(MODELS)('型号不接受其他分辨率，拒绝发生在上传之前�
 
 test.each(MODELS)(
   '渠道模型以 ID 显示并登记独立能力，其他协议不继承规格：$id',
-  ({ id, maxImages = 30, maxVideos, maxAudios = 10 }) => {
+  ({ id, maxVideos }) => {
     expect(findMediaModel(id)).toMatchObject({
       displayName: id,
       vendor: 'hongcheng',
       videoFormat: 'hongcheng',
-      inputs: { maxImages, maxVideos, maxAudios },
+      inputs: { maxImages: 30, maxVideos, maxAudios: 10 },
       mention: { image: '@Image{n}', video: '@Video{n}', audio: '@Audio{n}' },
     })
     expect(lookupMediaModel(id, 'ark_videos').catalogued).toBe(false)
@@ -225,7 +219,8 @@ test.each(MODELS)(
 
 test.each([
   { id: 'seedance2.5-aa-count', rate: 5.6 },
-  { id: 'sd2.5-pp-1080p', rate: 14.4 },
+  { id: 'XG-Seedance-2.5-720p-2', rate: 6.6 },
+  { id: 'lec-vp-seedance-2-5-301010-1', rate: 5.5 },
 ])('按次型号在响应缺少秒数时仍记录一次生成的目录估价：$id', async ({ id, rate }) => {
   poll = { status: 'completed' }
   const spends: MediaSpend[] = []
@@ -315,28 +310,25 @@ test.each(MODELS)(
   },
 )
 
-test.each(['GGsedanco2.5/480', 'sd2.5-pp-1080p'])(
-  '不支持参考视频的型号在上传和生成前拒绝：%s',
-  async (id) => {
-    expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
-    expect(
-      await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
-    ).toMatchObject({ ok: false, executed: false })
-    expect(seen).toEqual([])
-  },
-)
+test.each(['XG-Seedance-2.5-720p-2'])('不支持参考视频的型号在上传和生成前拒绝：%s', async (id) => {
+  expect(findMediaModel(id)?.operations).toEqual(['text_to_video', 'reference_to_video'])
+  expect(
+    await makeMediaPort(config('', id)).generate({ ...call(), inputs }, signal()),
+  ).toMatchObject({ ok: false, executed: false })
+  expect(seen).toEqual([])
+})
 
-test('PP 1080p 支持六种画幅及 9 图 3 音频，超限在上传前拒绝', async () => {
-  const id = 'sd2.5-pp-1080p'
+test('XG 按次支持三种画幅及 30 图 10 音频，超限在上传前拒绝', async () => {
+  const id = 'XG-Seedance-2.5-720p-2'
   const port = makeMediaPort(config('', id))
-  for (const references of [Array(10).fill(inputs[0]), Array(4).fill(inputs[2])]) {
+  for (const references of [Array(31).fill(inputs[0]), Array(11).fill(inputs[2])]) {
     expect(await port.generate({ ...call(), inputs: references }, signal())).toMatchObject({
       ok: false,
       executed: false,
     })
   }
   expect(seen).toEqual([])
-  const ratios = ['16:9', '9:16', '1:1', '4:3', '3:4', '21:9']
+  const ratios = ['16:9', '9:16', '1:1']
   expect(
     findMediaModel(id)
       ?.params.find((p) => p.name === 'aspect_ratio')
@@ -349,23 +341,23 @@ test('PP 1080p 支持六种画幅及 9 图 3 音频，超限在上传前拒绝',
         await port.generate(
           {
             ...call(),
-            inputs: [...Array(9).fill(inputs[0]), ...Array(3).fill(inputs[2])],
+            inputs: [...Array(30).fill(inputs[0]), ...Array(10).fill(inputs[2])],
             params: { aspect_ratio: ratio },
           },
           signal(),
         )
       ).ok,
     ).toBe(true)
-    expect(seen[12]?.body).toMatchObject({
+    expect(seen[40]?.body).toMatchObject({
       model: id,
-      resolution: '1080p',
+      resolution: '720p',
       seconds: '30',
       aspect_ratio: ratio,
       ratio,
     })
-    expect(seen[12]?.body?.reference_images).toHaveLength(9)
-    expect(seen[12]?.body?.reference_audios).toHaveLength(3)
-    expect(seen[12]?.body?.reference_videos).toBeUndefined()
+    expect(seen[40]?.body?.reference_images).toHaveLength(30)
+    expect(seen[40]?.body?.reference_audios).toHaveLength(10)
+    expect(seen[40]?.body?.reference_videos).toBeUndefined()
   }
 })
 
